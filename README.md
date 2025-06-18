@@ -31,8 +31,8 @@ ParetoQ 是一个用于大语言模型(LLM)极低比特量化训练的统一框�
 
 ### 1. 克隆项目
 ```bash
-git clone <repository-url>
-cd /root/autodl-tmp
+git clone https://github.com/LDLINGLINGLING/ParetoQ_for_MiniCPM4.git
+cd /your/path/ParetoQ_for_MiniCPM4
 ```
 
 ### 2. 安装依赖
