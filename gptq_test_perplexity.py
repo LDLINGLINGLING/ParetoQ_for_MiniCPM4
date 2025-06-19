@@ -1,251 +1,306 @@
 #!/usr/bin/env python3
 """
-测试转换后的GPTQ模型困惑度
+将分组量化的checkpoint-3转换为GPTQ格式的脚本
 """
 
 import torch
 import json
-import math
-import time
-from transformers import AutoTokenizer, AutoModelForCausalLM
-from torch.utils.data import DataLoader, Dataset
-import argparse
-from tqdm import tqdm
+import shutil
+import os
+from safetensors import safe_open
+from safetensors.torch import save_file
+from pathlib import Path
 import numpy as np
 
-class TextDataset(Dataset):
-    """文本数据集类"""
-    def __init__(self, texts, tokenizer, max_length=512):
-        self.texts = texts
-        self.tokenizer = tokenizer
-        self.max_length = max_length
-
-    def __len__(self):
-        return len(self.texts)
-
-    def __getitem__(self, idx):
-        text = self.texts[idx]
-        encoding = self.tokenizer(
-            text,
-            truncation=True,
-            padding='max_length',
-            max_length=self.max_length,
-            return_tensors='pt'
-        )
-        return {
-            'input_ids': encoding['input_ids'].squeeze(),
-            'attention_mask': encoding['attention_mask'].squeeze()
-        }
-
-def load_test_data(data_path, max_samples=None):
-    """加载测试数据"""
-    texts = []
-    with open(data_path, 'r', encoding='utf-8') as f:
-        for i, line in enumerate(f):
-            if max_samples and i >= max_samples:
-                break
-            data = json.loads(line.strip())
-            texts.append(data['text'])
-    return texts
-
-def calculate_perplexity(model, dataloader, device):
-    """计算困惑度"""
-    model.eval()
-    total_loss = 0
-    total_tokens = 0
+def convert_weight_to_gptq_simple(weight, scales, w_bits, group_size):
+    """
+    简化的权重转换方法，直接使用训练时的量化参数
     
-    with torch.no_grad():
-        for batch in tqdm(dataloader, desc="计算困惑度"):
-            input_ids = batch['input_ids'].to(device)
-            attention_mask = batch['attention_mask'].to(device)
-            
-            # 创建labels，忽略padding token
-            labels = input_ids.clone()
-            labels[attention_mask == 0] = -100  # 忽略padding部分的损失
-            
-            try:
-                # 计算损失
-                outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels, use_cache=False)
-                loss = outputs.loss
-                
-                # 检查损失是否有效
-                if torch.isnan(loss) or torch.isinf(loss):
-                    print(f"警告: 检测到无效损失值: {loss.item()}")
-                    continue
-                
-                # 计算有效token数量（排除padding和忽略的token）
-                num_valid_tokens = (labels != -100).sum().item()
-                if num_valid_tokens > 0:
-                    total_loss += loss.item() * num_valid_tokens
-                    total_tokens += num_valid_tokens
-                    
-            except Exception as e:
-                print(f"批次处理出错: {e}")
-                continue
+    Args:
+        weight: 原始浮点权重张量 [out_features, in_features]
+        scales: 训练时的量化scale [out_features, num_groups]
+        w_bits: 量化位数
+        group_size: 分组大小
     
-    if total_tokens == 0:
-        print("错误: 没有有效的token用于计算困惑度")
-        return float('inf'), float('inf')
+    Returns:
+        qweight, scales, qzeros, g_idx
+    """
+    out_features, in_features = weight.shape
+    num_groups = scales.shape[1]
     
-    # 计算平均损失和困惑度
-    avg_loss = total_loss / total_tokens
+    # 验证分组配置
+    expected_groups = (in_features + group_size - 1) // group_size
+    if num_groups != expected_groups:
+        raise ValueError(f"Scale分组数 {num_groups} 与预期 {expected_groups} 不匹配")
     
-    # 检查平均损失的有效性
-    if math.isnan(avg_loss) or math.isinf(avg_loss):
-        print(f"错误: 平均损失无效: {avg_loss}")
-        return float('inf'), avg_loss
+    # 1. 使用与训练时相同的量化方式
+    # 填充权重到完整分组
+    padded_in_features = num_groups * group_size
+    if in_features < padded_in_features:
+        padding = torch.zeros(out_features, padded_in_features - in_features, 
+                            dtype=weight.dtype, device=weight.device)
+        weight_padded = torch.cat([weight, padding], dim=1)
+    else:
+        weight_padded = weight[:, :padded_in_features]
     
-    try:
-        perplexity = math.exp(avg_loss)
-    except OverflowError:
-        perplexity = float('inf')
+    # 重新组织为分组形式 [out_features, num_groups, group_size]
+    weight_grouped = weight_padded.view(out_features, num_groups, group_size)
+    scales_expanded = scales.unsqueeze(2)  # [out_features, num_groups, 1]
     
-    return perplexity, avg_loss
-
-def test_model_perplexity(
-    model_path="/root/autodl-tmp/MiniCPM4-0.5B-QAT-Int4-GPTQ-converted",
-    data_path="/root/autodl-tmp/ParetoQ_for_MiniCPM4/training_dataset_example.jsonl",
-    max_samples=100,
-    batch_size=4,
-    max_length=512,
-    device=None
-):
-    """测试模型困惑度"""
+    # 2. 使用LSQ量化公式（与训练时一致）
+    if w_bits == 1 or w_bits == 0:
+        Qn, Qp = -1, 1
+    else:
+        Qn = -(2 ** (w_bits - 1))
+        Qp = 2 ** (w_bits - 1) - 1
     
-    if device is None:
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    
-    print("=== GPTQ模型困惑度测试 ===")
-    print(f"模型路径: {model_path}")
-    print(f"数据路径: {data_path}")
-    print(f"设备: {device}")
-    print(f"最大样本数: {max_samples}")
-    print(f"批次大小: {batch_size}")
-    print(f"最大长度: {max_length}")
-    print()
-    
-    # 1. 加载tokenizer
-    print("1. 加载tokenizer...")
-    tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-    print(f"   词汇表大小: {len(tokenizer)}")
-    
-    # 2. 加载模型
-    print("2. 加载GPTQ模型...")
-    start_time = time.time()
-    model = AutoModelForCausalLM.from_pretrained(
-        model_path,
-        torch_dtype=torch.float16,
-        device_map="auto",
-        trust_remote_code=True
+    # 量化：w_q = (w / scale).round().clamp(Qn, Qp)
+    quantized_lsq = torch.clamp(
+        torch.round(weight_grouped / scales_expanded), 
+        Qn, Qp
     )
-    load_time = time.time() - start_time
-    print(f"   模型加载完成，耗时: {load_time:.2f}秒")
-    print(f"   模型参数量: {sum(p.numel() for p in model.parameters()) / 1e6:.1f}M")
     
-    # 3. 加载测试数据
-    print("3. 加载测试数据...")
-    texts = load_test_data(data_path, max_samples)
-    print(f"   加载了 {len(texts)} 个样本")
+    # 3. 转换为GPTQ兼容格式：映射到 [0, 2^w_bits-1]
+    max_q = 2 ** w_bits - 1
+    quantized_gptq = quantized_lsq - Qn  # 将 [Qn, Qp] 映射到 [0, max_q]
+    quantized_gptq = torch.clamp(quantized_gptq, 0, max_q).to(torch.int32)
     
-    # 4. 创建数据集和数据加载器
-    print("4. 创建数据集...")
-    dataset = TextDataset(texts, tokenizer, max_length)
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
-    print(f"   创建了 {len(dataloader)} 个批次")
-    
-    # 5. 计算困惑度
-    print("5. 计算困惑度...")
-    start_time = time.time()
-    perplexity, avg_loss = calculate_perplexity(model, dataloader, device)
-    calc_time = time.time() - start_time
-    
-    # 6. 打印结果
-    print("\n=== 测试结果 ===")
-    print(f"平均损失: {avg_loss:.4f}")
-    print(f"困惑度: {perplexity:.4f}")
-    print(f"计算时间: {calc_time:.2f}秒")
-    print(f"平均每样本时间: {calc_time/len(texts):.3f}秒")
-    
-    # 7. 保存结果
-    results = {
-        "model_path": model_path,
-        "data_path": data_path,
-        "num_samples": len(texts),
-        "avg_loss": avg_loss,
-        "perplexity": perplexity,
-        "calc_time": calc_time,
-        "batch_size": batch_size,
-        "max_length": max_length
-    }
-    
-    results_path = "/root/autodl-tmp/gptq_perplexity_results.json"
-    with open(results_path, 'w', encoding='utf-8') as f:
-        json.dump(results, f, indent=2, ensure_ascii=False)
-    
-    print(f"\n结果已保存到: {results_path}")
-    
-    return perplexity, avg_loss
-
-def compare_with_baseline():
-    """与基线模型比较"""
-    print("\n=== 与训练结果比较 ===")
-    
-    # 读取训练时的结果
-    try:
-        with open("/root/autodl-tmp/output/eval_results.json", 'r') as f:
-            train_results = json.load(f)
-        train_perplexity = train_results.get("perplexity", None)
+    # 4. 打包量化权重
+    if w_bits == 4:
+        packing_factor = 8
         
-        if train_perplexity:
-            print(f"训练时困惑度: {train_perplexity:.4f}")
-            print("注意: 训练时使用的是验证集，当前测试使用的是示例数据")
-        else:
-            print("未找到训练时的困惑度数据")
-    except FileNotFoundError:
-        print("未找到训练结果文件")
+        # 重新组织：[out_features, num_groups, group_size] -> [padded_in_features, out_features]
+        quantized_reshaped = quantized_gptq.view(out_features, -1).t()
+        
+        # 填充到packing_factor的倍数
+        total_elements = quantized_reshaped.shape[0]
+        packed_rows = (total_elements + packing_factor - 1) // packing_factor
+        padded_size = packed_rows * packing_factor
+        
+        if total_elements < padded_size:
+            padding = torch.zeros(padded_size - total_elements, out_features, 
+                                dtype=quantized_reshaped.dtype, device=weight.device)
+            quantized_reshaped = torch.cat([quantized_reshaped, padding], dim=0)
+        
+        # 重塑并打包
+        quantized_packed = quantized_reshaped.view(packed_rows, packing_factor, out_features)
+        
+        qweight = torch.zeros(packed_rows, out_features, dtype=torch.int32, device=weight.device)
+        for i in range(packing_factor):
+            qweight += (quantized_packed[:, i, :] << (i * 4))
+    else:
+        raise ValueError(f"不支持的量化位数: {w_bits}")
+    
+    # 5. 生成qzeros - 使用LSQ的零点偏移
+    zero_point = -Qn  # LSQ量化的零点偏移
+    qzeros_cols = (out_features + 7) // 8
+    
+    # 创建零点矩阵并打包
+    zeros_matrix = torch.full((num_groups, out_features), zero_point, 
+                             dtype=torch.int32, device=weight.device)
+    
+    # 填充到8的倍数
+    if out_features % 8 != 0:
+        padding_cols = 8 - (out_features % 8)
+        padding = torch.zeros(num_groups, padding_cols, dtype=torch.int32, device=weight.device)
+        zeros_matrix = torch.cat([zeros_matrix, padding], dim=1)
+    
+    # 打包零点
+    zeros_packed = zeros_matrix.view(num_groups, qzeros_cols, 8)
+    qzeros = torch.zeros(num_groups, qzeros_cols, dtype=torch.int32, device=weight.device)
+    for i in range(8):
+        qzeros += (zeros_packed[:, :, i] << (i * 4))
+    
+    # 6. 调整scales格式：直接使用训练时的scale
+    # GPTQ scales格式: [num_groups, out_features]
+    gptq_scales = scales.t().contiguous()  # 转置：[out_features, num_groups] -> [num_groups, out_features]
+    
+    # 7. 生成g_idx
+    g_idx = torch.zeros(in_features, dtype=torch.int32, device=weight.device)
+    for group_id in range(num_groups):
+        start_idx = group_id * group_size
+        end_idx = min(start_idx + group_size, in_features)
+        g_idx[start_idx:end_idx] = group_id
+    
+    # 验证
+    print(f"    简化转换验证:")
+    print(f"      原始权重范围: [{weight.min().item():.6f}, {weight.max().item():.6f}]")
+    print(f"      LSQ量化范围: [{quantized_lsq.min().item()}, {quantized_lsq.max().item()}]")
+    print(f"      GPTQ量化范围: [{quantized_gptq.min().item()}, {quantized_gptq.max().item()}]")
+    print(f"      使用训练scales: [{gptq_scales.min().item():.6f}, {gptq_scales.max().item():.6f}]")
+    print(f"      零点值: {zero_point}")
+    
+    return qweight, gptq_scales, qzeros, g_idx
 
-def main():
-    parser = argparse.ArgumentParser(description="测试GPTQ模型困惑度")
-    parser.add_argument("--model_path", 
+
+def convert_checkpoint_to_gptq(
+    checkpoint_path="/root/autodl-tmp/output/checkpoint-3",
+    gptq_template_path="/root/autodl-tmp/MiniCPM4-0.5B-QAT-Int4-GPTQ-format",
+    output_path="/root/autodl-tmp/MiniCPM4-0.5B-QAT-Int4-GPTQ-converted",
+    use_simple_conversion=True
+):
+    """
+    将分组量化的checkpoint转换为GPTQ格式
+    
+    Args:
+        checkpoint_path: 输入的checkpoint路径
+        gptq_template_path: GPTQ模板路径 
+        output_path: 输出路径
+        use_simple_conversion: 是否使用简化转换方法
+    """
+    
+    print("=== 开始转换checkpoint到GPTQ格式 ===")
+    print(f"使用{'简化' if use_simple_conversion else '标准'}转换方法")
+    
+    # 创建输出目录
+    os.makedirs(output_path, exist_ok=True)
+    
+    # 1. 复制配置文件和其他必要文件
+    print("1. 复制配置文件...")
+    files_to_copy = [
+        "config.json", "generation_config.json", "tokenizer.json", 
+        "tokenizer_config.json", "added_tokens.json", "quantize_config.json",
+        "configuration_minicpm.py", "modeling_minicpm.py"
+    ]
+    
+    for file_name in files_to_copy:
+        src_path = os.path.join(gptq_template_path, file_name)
+        dst_path = os.path.join(output_path, file_name)
+        if os.path.exists(src_path):
+            shutil.copy2(src_path, dst_path)
+            print(f"  复制 {file_name}")
+    
+    # 特殊处理tokenizer.model（如果存在）
+    tokenizer_model_path = os.path.join(gptq_template_path, "tokenizer.model")
+    if os.path.exists(tokenizer_model_path):
+        shutil.copy2(tokenizer_model_path, os.path.join(output_path, "tokenizer.model"))
+        print("  复制 tokenizer.model")
+    
+    # 2. 读取checkpoint配置
+    print("2. 读取checkpoint配置...")
+    with open(os.path.join(checkpoint_path, "config.json"), 'r') as f:
+        checkpoint_config = json.load(f)
+    
+    w_bits = checkpoint_config.get('w_bits', 4)
+    group_size = checkpoint_config.get('group_size', 128)
+    enable_groupwise = checkpoint_config.get('enable_groupwise', True)
+    
+    print(f"  量化位数: {w_bits}")
+    print(f"  分组大小: {group_size}")
+    print(f"  分组量化: {enable_groupwise}")
+    
+    if not enable_groupwise:
+        raise ValueError("只支持分组量化的checkpoint转换")
+    
+    # 3. 加载checkpoint权重
+    print("3. 加载checkpoint权重...")
+    checkpoint_tensors = {}
+    with safe_open(os.path.join(checkpoint_path, "model.safetensors"), framework="pt", device="cpu") as f:
+        for key in f.keys():
+            checkpoint_tensors[key] = f.get_tensor(key)
+    
+    print(f"  加载了 {len(checkpoint_tensors)} 个张量")
+    
+    # 4. 转换权重到GPTQ格式
+    print("4. 转换权重到GPTQ格式...")
+    gptq_tensors = {}
+    
+    # 找出所有需要量化的线性层
+    quantized_layers = set()
+    for key in checkpoint_tensors.keys():
+        if 'weight_clip_val' in key:
+            layer_name = key.replace('.weight_clip_val', '')
+            quantized_layers.add(layer_name)
+    
+    print(f"  找到 {len(quantized_layers)} 个量化层")
+    
+    # 选择转换函数
+    convert_func = convert_weight_to_gptq_simple if use_simple_conversion else convert_weight_to_gptq
+    
+    # 转换每个量化层
+    converted_count = 0
+    for layer_name in sorted(quantized_layers):
+        weight_key = layer_name + '.weight'
+        scale_key = layer_name + '.weight_clip_val'
+        
+        if weight_key not in checkpoint_tensors or scale_key not in checkpoint_tensors:
+            print(f"  警告: 跳过层 {layer_name}，缺少权重或scale")
+            continue
+        
+        weight = checkpoint_tensors[weight_key]
+        scales = checkpoint_tensors[scale_key]
+        
+        print(f"  转换层: {layer_name}")
+        print(f"    权重形状: {weight.shape}")
+        print(f"    Scale形状: {scales.shape}")
+        
+        # 转换为GPTQ格式
+        gptq_weight, gptq_scales, gptq_qzeros, gptq_g_idx = convert_func(
+            weight, scales, w_bits, group_size
+        )
+        
+        # 保存GPTQ格式的张量
+        gptq_tensors[layer_name + '.qweight'] = gptq_weight
+        gptq_tensors[layer_name + '.scales'] = gptq_scales
+        gptq_tensors[layer_name + '.qzeros'] = gptq_qzeros
+        gptq_tensors[layer_name + '.g_idx'] = gptq_g_idx
+        
+        converted_count += 1
+        
+        print(f"    -> qweight: {gptq_weight.shape}")
+        print(f"    -> scales: {gptq_scales.shape}")
+        print(f"    -> qzeros: {gptq_qzeros.shape}")
+        print(f"    -> g_idx: {gptq_g_idx.shape}")
+    
+    # 复制其他非量化参数
+    print("5. 复制非量化参数...")
+    for key, tensor in checkpoint_tensors.items():
+        # 跳过已处理的权重和scale参数
+        if any(layer_name in key for layer_name in quantized_layers):
+            continue
+        
+        # 复制其他参数
+        gptq_tensors[key] = tensor
+        print(f"  复制: {key} {tensor.shape}")
+    
+    # 6. 保存GPTQ格式的权重文件
+    print("6. 保存GPTQ格式权重...")
+    output_safetensors_path = os.path.join(output_path, "model.safetensors")
+    save_file(gptq_tensors, output_safetensors_path)
+    
+    print(f"  保存了 {len(gptq_tensors)} 个张量到 {output_safetensors_path}")
+    print(f"  成功转换了 {converted_count} 个量化层")
+    
+    print("\n=== 转换完成 ===")
+    print(f"GPTQ格式模型已保存到: {output_path}")
+
+
+if __name__ == "__main__":
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="将分组量化checkpoint转换为GPTQ格式")
+    parser.add_argument("--checkpoint_path", 
+                       default="/root/autodl-tmp/output/checkpoint-3",
+                       help="输入checkpoint路径")
+    parser.add_argument("--gptq_template_path",
+                       default="/root/autodl-tmp/MiniCPM4-0.5B-QAT-Int4-GPTQ-format", 
+                       help="GPTQ模板路径")
+    parser.add_argument("--output_path",
                        default="/root/autodl-tmp/MiniCPM4-0.5B-QAT-Int4-GPTQ-converted",
-                       help="GPTQ模型路径")
-    parser.add_argument("--data_path",
-                       default="/root/autodl-tmp/ParetoQ_for_MiniCPM4/training_dataset_example.jsonl",
-                       help="测试数据路径")
-    parser.add_argument("--max_samples", type=int, default=100,
-                       help="最大测试样本数")
-    parser.add_argument("--batch_size", type=int, default=4,
-                       help="批次大小")
-    parser.add_argument("--max_length", type=int, default=512,
-                       help="最大序列长度")
-    parser.add_argument("--device", default=None,
-                       help="计算设备 (cuda/cpu)")
+                       help="输出路径")
+    parser.add_argument("--simple", action='store_true',
+                       help="使用简化转换方法")
     
     args = parser.parse_args()
     
     try:
-        # 测试困惑度
-        perplexity, avg_loss = test_model_perplexity(
-            model_path=args.model_path,
-            data_path=args.data_path,
-            max_samples=args.max_samples,
-            batch_size=args.batch_size,
-            max_length=args.max_length,
-            device=args.device
+        convert_checkpoint_to_gptq(
+            checkpoint_path=args.checkpoint_path,
+            gptq_template_path=args.gptq_template_path, 
+            output_path=args.output_path,
+            use_simple_conversion=args.simple
         )
-        
-        # 与基线比较
-        compare_with_baseline()
-        
-        print(f"\n=== 最终结果 ===")
-        print(f"GPTQ模型困惑度: {perplexity:.4f}")
-        
     except Exception as e:
-        print(f"测试失败: {e}")
+        print(f"转换失败: {e}")
         import traceback
         traceback.print_exc()
-
-if __name__ == "__main__":
-    main()
