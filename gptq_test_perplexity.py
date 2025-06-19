@@ -59,18 +59,46 @@ def calculate_perplexity(model, dataloader, device):
             input_ids = batch['input_ids'].to(device)
             attention_mask = batch['attention_mask'].to(device)
             
-            # 计算损失
-            outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=input_ids)
-            loss = outputs.loss
+            # 创建labels，忽略padding token
+            labels = input_ids.clone()
+            labels[attention_mask == 0] = -100  # 忽略padding部分的损失
             
-            # 累计损失和token数量
-            num_tokens = attention_mask.sum().item()
-            total_loss += loss.item() * num_tokens
-            total_tokens += num_tokens
+            try:
+                # 计算损失
+                outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels, use_cache=False)
+                loss = outputs.loss
+                
+                # 检查损失是否有效
+                if torch.isnan(loss) or torch.isinf(loss):
+                    print(f"警告: 检测到无效损失值: {loss.item()}")
+                    continue
+                
+                # 计算有效token数量（排除padding和忽略的token）
+                num_valid_tokens = (labels != -100).sum().item()
+                if num_valid_tokens > 0:
+                    total_loss += loss.item() * num_valid_tokens
+                    total_tokens += num_valid_tokens
+                    
+            except Exception as e:
+                print(f"批次处理出错: {e}")
+                continue
+    
+    if total_tokens == 0:
+        print("错误: 没有有效的token用于计算困惑度")
+        return float('inf'), float('inf')
     
     # 计算平均损失和困惑度
     avg_loss = total_loss / total_tokens
-    perplexity = math.exp(avg_loss)
+    
+    # 检查平均损失的有效性
+    if math.isnan(avg_loss) or math.isinf(avg_loss):
+        print(f"错误: 平均损失无效: {avg_loss}")
+        return float('inf'), avg_loss
+    
+    try:
+        perplexity = math.exp(avg_loss)
+    except OverflowError:
+        perplexity = float('inf')
     
     return perplexity, avg_loss
 
