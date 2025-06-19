@@ -60,6 +60,8 @@ if python -c "import deepspeed" 2>/dev/null; then
         # ============ 量化相关参数 ============
         --w_bits 4 \                                           # 设置权重量化位数为4位
         --contain_weight_clip_val False \                      # 设置不包含权重裁剪值（禁用权重裁剪）
+        --group_size 128 \                                     # 设置分组量化的组大小为128
+        --enable_groupwise True \                              # 启用分组量化
         
         # ============ 数据采样参数 ============
         --max_train_samples -1 \                               # 设置最大训练样本数为-1（使用全部训练数据）
@@ -134,6 +136,8 @@ else
         --eval_data_local_path "${PARETQ_DIR}/training_dataset_example.jsonl" \
         --w_bits 4 \
         --contain_weight_clip_val False \
+        --group_size 128 \
+        --enable_groupwise True \
         --max_train_samples -1 \
         --max_eval_samples -1 \
         --cache_dir "${CACHE_DIR}" \

@@ -37,6 +37,18 @@ class ModelArguments:
             "help": "Set contain_weight_clip_val=True when load a trained quantized model."
         },
     )
+    group_size: Optional[int] = field(
+        default=128,
+        metadata={
+            "help": "Group size for grouped quantization. Default is 128. Use -1 to disable grouping."
+        },
+    )
+    enable_groupwise: Optional[bool] = field(
+        default=False,
+        metadata={
+            "help": "Enable grouped quantization. If True, weights will be quantized group-wise instead of row-wise."
+        },
+    )
 
 @dataclass
 class DataArguments:

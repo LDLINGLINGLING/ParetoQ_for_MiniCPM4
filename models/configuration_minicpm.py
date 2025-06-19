@@ -167,7 +167,12 @@ class MiniCPMConfig(PretrainedConfig):
 
         # sparse config
         self.sparse_config = sparse_config
-
+        
+        # 新增：量化配置参数
+        self.w_bits = kwargs.get('w_bits', 16)  # 量化位数
+        self.group_size = kwargs.get('group_size', 128)  # 分组大小
+        self.enable_groupwise = kwargs.get('enable_groupwise', False)  # 是否启用分组量化
+        
         super().__init__(
             pad_token_id=pad_token_id,
             bos_token_id=bos_token_id,

@@ -41,11 +41,13 @@ def setup_debug_args():
     model_args.output_model_local_path = "/root/autodl-tmp/Minicpm_quant"
     model_args.w_bits = 4  # 量化位数
     model_args.contain_weight_clip_val = False
+    model_args.group_size = 128  # 分组量化大小
+    model_args.enable_groupwise = True  # 启用分组量化
     
     # 数据参数
     data_args = Args()
-    data_args.train_data_local_path = "/root/autodl-tmp/ParetoQ-main/training_dataset_example.jsonl"  # 修改为你的训练数据路径
-    data_args.eval_data_local_path = "/root/autodl-tmp/ParetoQ-main/training_dataset_example.jsonl"   # 修改为你的验证数据路径
+    data_args.train_data_local_path = "/root/autodl-tmp/ParetoQ_for_MiniCPM4/training_dataset_example.jsonl"  # 修改为你的训练数据路径
+    data_args.eval_data_local_path = "/root/autodl-tmp/ParetoQ_for_MiniCPM4/training_dataset_example.jsonl"   # 修改为你的验证数据路径
     
     # 训练参数
     training_args = Args()
@@ -101,6 +103,9 @@ def train():
     config = MiniCPMConfig.from_pretrained(model_args.input_model_filename)
     # 设置权重量化位数
     config.w_bits = model_args.w_bits
+    # 新增：设置分组量化配置
+    config.group_size = model_args.group_size
+    config.enable_groupwise = model_args.enable_groupwise
     # 加载量化版本的LLaMA模型
     model = AutoModelForCausalLM.from_pretrained(
         pretrained_model_name_or_path=model_args.input_model_filename,
