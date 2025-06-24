@@ -249,9 +249,9 @@ class GroupedLsqQuantization(torch.autograd.Function):
     每组使用独立的量化缩放因子。这样可以更好地适应权重分布的差异，
     提高量化精度。
     
-    与传统的逐行量化不同，分组量化在输入特征维度上进行分组，
-    形状为 [out_features, in_features] 的权重矩阵被分为
-    [out_features, num_groups, group_size] 的形式进行量化。
+    采用与GPTQ相同的分组方式：按输入特征维度进行分组，
+    形状为 [out_features, in_features] 的权重矩阵中，
+    每个分组包含连续的 group_size 个输入特征。
     """
     @staticmethod
     def forward(ctx, input, alpha, num_bits, group_size):
@@ -298,57 +298,46 @@ class GroupedLsqQuantization(torch.autograd.Function):
         # 计算需要多少个组（向上取整）
         num_groups = (in_features + group_size - 1) // group_size
         
-        # === 处理输入特征维度不能被group_size整除的情况 ===
-        # 计算填充后的输入特征数
-        padded_in_features = num_groups * group_size
-        if in_features != padded_in_features:
-            # 如果输入特征数不是group_size的整数倍，需要用0填充
-            # 创建填充张量，形状为 [out_features, 填充长度]
-            padding = torch.zeros(out_features, padded_in_features - in_features, 
-                                device=input.device, dtype=input.dtype)
-            # 在最后一个维度上拼接，得到填充后的输入
-            input_padded = torch.cat([input, padding], dim=1)
-        else:
-            # 如果正好整除，不需要填充
-            input_padded = input
-            
-        # === 重塑为分组形式 ===
-        # 将 [out_features, padded_in_features] 重塑为 [out_features, num_groups, group_size]
-        # 这样每个组的权重就连续存储了
-        input_grouped = input_padded.view(out_features, num_groups, group_size)
-        
-        # === 扩展缩放因子维度 ===
-        # alpha形状: [out_features, num_groups] -> [out_features, num_groups, 1]
-        # 这样可以与input_grouped进行广播运算
-        alpha_expanded = alpha.unsqueeze(-1)
+        # === 采用与GPTQ相同的分组方式 ===
+        # 创建分组索引，与GPTQ保持一致
+        g_idx = torch.tensor([i // group_size for i in range(in_features)], 
+                           dtype=torch.int32, device=input.device)
         
         # 计算梯度缩放因子，用于反向传播时的梯度归一化
-        # 如果Qp非零，按元素数和量化上界进行归一化；否则只按元素数归一化
         grad_scale = 1.0 / math.sqrt(input.numel() * Qp) if Qp else 1.0 / math.sqrt(input.numel())
         
-        # === 保存前向传播信息供反向传播使用 ===
-        ctx.save_for_backward(input_grouped, alpha)
-        ctx.other = grad_scale, Qn, Qp, out_features, in_features
+        # === 执行分组量化 ===
+        w_q = torch.zeros_like(input)
         
-        # === 执行量化操作 ===
-        if num_bits == 1:
-            # 1位量化：直接取符号，结果为 -1 或 +1
-            q_w = input_grouped.sign()
-        else:
-            # 多位量化：先归一化，然后四舍五入，最后限制在量化范围内
-            # 1. input_grouped / alpha_expanded: 归一化到量化范围
-            # 2. round(): 四舍五入到最近的整数
-            # 3. clamp(Qn, Qp): 限制在量化范围内
-            q_w = (input_grouped / alpha_expanded).round().clamp(Qn, Qp)
+        # 按组进行量化，与GPTQ的分组逻辑一致
+        for group_id in range(num_groups):
+            # 计算当前组的列范围
+            start_col = group_id * group_size
+            end_col = min(start_col + group_size, in_features)
             
-        # === 反量化：将量化后的值乘以缩放因子得到最终结果 ===
-        w_q_grouped = q_w * alpha_expanded
+            # 获取当前组的权重
+            w_group = input[:, start_col:end_col]  # [out_features, current_group_size]
+            
+            # 获取当前组的缩放因子
+            alpha_group = alpha[:, group_id:group_id+1]  # [out_features, 1]
+            
+            # === 执行量化操作 ===
+            if num_bits == 1:
+                # 1位量化：直接取符号，结果为 -1 或 +1
+                q_w_group = w_group.sign()
+            else:
+                # 多位量化：先归一化，然后四舍五入，最后限制在量化范围内
+                q_w_group = (w_group / alpha_group).round().clamp(Qn, Qp)
+                
+            # === 反量化：将量化后的值乘以缩放因子得到最终结果 ===
+            w_q_group = q_w_group * alpha_group
+            
+            # 将量化后的权重放回对应位置
+            w_q[:, start_col:end_col] = w_q_group
         
-        # === 重塑回原始形状 ===
-        # 将 [out_features, num_groups, group_size] 重塑回 [out_features, padded_in_features]
-        w_q_padded = w_q_grouped.view(out_features, padded_in_features)
-        # 去掉之前添加的填充，恢复到原始输入特征数
-        w_q = w_q_padded[:, :in_features]
+        # === 保存前向传播信息供反向传播使用 ===
+        ctx.save_for_backward(input, alpha, g_idx)
+        ctx.other = grad_scale, Qn, Qp, out_features, in_features
         
         return w_q
     
@@ -373,62 +362,57 @@ class GroupedLsqQuantization(torch.autograd.Function):
             return grad_output, None, None, None
             
         # === 从上下文恢复保存的信息 ===
-        input_grouped, alpha = ctx.saved_tensors
+        input, alpha, g_idx = ctx.saved_tensors
         grad_scale, Qn, Qp, out_features, in_features = ctx.other
-        
-        # === 处理grad_output的形状，使其与前向传播时的分组一致 ===
-        num_groups = input_grouped.shape[1]
         group_size = ctx.group_size
-        padded_in_features = num_groups * group_size
         
-        # 如果原始输入特征数不是group_size的整数倍，需要填充grad_output
-        if in_features != padded_in_features:
-            # 创建与前向传播时相同的填充
-            padding = torch.zeros(out_features, padded_in_features - in_features,
-                                device=grad_output.device, dtype=grad_output.dtype)
-            grad_output_padded = torch.cat([grad_output, padding], dim=1)
-        else:
-            grad_output_padded = grad_output
+        # 计算分组数量
+        num_groups = (in_features + group_size - 1) // group_size
+        
+        # 初始化梯度
+        grad_input = torch.zeros_like(input)
+        grad_alpha = torch.zeros_like(alpha)
+        
+        # === 按组计算梯度，与前向传播保持一致 ===
+        for group_id in range(num_groups):
+            # 计算当前组的列范围
+            start_col = group_id * group_size
+            end_col = min(start_col + group_size, in_features)
             
-        # 将grad_output重塑为分组形式，与前向传播时保持一致
-        grad_output_grouped = grad_output_padded.view(out_features, num_groups, group_size)
-        # 扩展alpha维度以便广播
-        alpha_expanded = alpha.unsqueeze(-1)
-        
-        # === 计算量化指示器 ===
-        # 计算归一化后的权重值
-        q_w = input_grouped / alpha_expanded
-        # 小于量化下界的权重位置
-        indicate_small = (q_w < Qn).float()
-        # 大于量化上界的权重位置
-        indicate_big = (q_w > Qp).float()
-        # 在量化范围内的权重位置（这些位置会传递梯度）
-        indicate_middle = 1.0 - indicate_small - indicate_big
-        
-        # === 计算缩放因子alpha的梯度 ===
-        if ctx.num_bits == 1:
-            # 1位量化：alpha的梯度与权重符号相关
-            # sign()函数的导数在0处未定义，这里使用符号值作为近似
-            grad_alpha = (input_grouped.sign() * grad_output_grouped * grad_scale).sum(dim=-1)
-        else:
-            # 多位量化：alpha的梯度包含三部分
-            # 1. indicate_small * Qn: 小于下界的权重贡献量化下界的梯度
-            # 2. indicate_big * Qp: 大于上界的权重贡献量化上界的梯度  
-            # 3. indicate_middle * (-q_w + q_w.round()): 范围内权重的量化误差梯度
-            grad_alpha = ((indicate_small * Qn + indicate_big * Qp + 
-                          indicate_middle * (-q_w + q_w.round())) * 
-                         grad_output_grouped * grad_scale).sum(dim=-1)
-        
-        # === 计算输入权重的梯度 ===
-        # 使用直通估计器：只有在量化范围内的权重才传递梯度
-        # 超出范围的权重梯度被截断为0
-        grad_input_grouped = indicate_middle * grad_output_grouped
-        
-        # === 重塑梯度回原始形状 ===
-        # 将分组形式的梯度重塑回 [out_features, padded_in_features]
-        grad_input_padded = grad_input_grouped.view(out_features, padded_in_features)
-        # 去掉填充部分，恢复到原始输入特征数
-        grad_input = grad_input_padded[:, :in_features]
+            # 获取当前组的权重和梯度
+            w_group = input[:, start_col:end_col]  # [out_features, current_group_size]
+            grad_output_group = grad_output[:, start_col:end_col]  # [out_features, current_group_size]
+            
+            # 获取当前组的缩放因子
+            alpha_group = alpha[:, group_id:group_id+1]  # [out_features, 1]
+            
+            # === 计算量化指示器 ===
+            # 计算归一化后的权重值
+            q_w = w_group / alpha_group
+            # 小于量化下界的权重位置
+            indicate_small = (q_w < Qn).float()
+            # 大于量化上界的权重位置
+            indicate_big = (q_w > Qp).float()
+            # 在量化范围内的权重位置（这些位置会传递梯度）
+            indicate_middle = 1.0 - indicate_small - indicate_big
+            
+            # === 计算缩放因子alpha的梯度 ===
+            if ctx.num_bits == 1:
+                # 1位量化：alpha的梯度与权重符号相关
+                grad_alpha_group = (w_group.sign() * grad_output_group * grad_scale).sum(dim=-1, keepdim=True)
+            else:
+                # 多位量化：alpha的梯度包含三部分
+                grad_alpha_group = ((indicate_small * Qn + indicate_big * Qp + 
+                                   indicate_middle * (-q_w + q_w.round())) * 
+                                  grad_output_group * grad_scale).sum(dim=-1, keepdim=True)
+            
+            # === 计算输入权重的梯度 ===
+            # 使用直通估计器：只有在量化范围内的权重才传递梯度
+            grad_input_group = indicate_middle * grad_output_group
+            
+            # 将梯度放回对应位置
+            grad_input[:, start_col:end_col] = grad_input_group
+            grad_alpha[:, group_id:group_id+1] = grad_alpha_group
         
         # 返回梯度：(输入梯度, alpha梯度, num_bits梯度=None, group_size梯度=None)
         return grad_input, grad_alpha, None, None
