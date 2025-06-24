@@ -121,25 +121,53 @@ def train():
     if not model_args.contain_weight_clip_val:
         for name, param in model.named_parameters():
             if "weight_clip_val" in name:
-                # 获取对应的权重参数名称
+                # 获取对应的权重参数
                 weight_name = name.replace("weight_clip_val", "weight")
                 weight_param = dict(model.named_parameters()).get(weight_name, None)
-
-                # 根据不同的量化位数计算缩放因子
-                if model_args.w_bits == 1:
-                    # 1位量化：使用权重绝对值的均值作为缩放因子
-                    scale = torch.mean(weight_param.abs(), dim=-1, keepdim=True).detach()
-                elif model_args.w_bits == 0 or model_args.w_bits == 2:
-                    # 0位或2位量化：使用权重绝对值的最大值作为缩放因子
-                    scale, _ = torch.max(torch.abs(weight_param), dim=-1, keepdim=True)
-                elif model_args.w_bits == 3 or model_args.w_bits == 4:
-                    # 3位或4位量化：计算量化范围内的缩放因子
-                    xmax, _ = torch.max(torch.abs(weight_param), dim=-1, keepdim=True)
-                    maxq = 2 ** (model_args.w_bits - 1) - 1  # 最大量化值
-                    scale = xmax / maxq
-                else:
-                    raise NotImplementedError
-
+                
+                if weight_param is None:
+                    continue
+                
+                # 获取权重形状和分组参数
+                out_features, in_features = weight_param.shape
+                group_size = getattr(model_args, 'group_size', 128)  # 默认分组大小
+                num_groups = (in_features + group_size - 1) // group_size
+                
+                # 初始化缩放因子，形状为 [out_features, num_groups]
+                scale = torch.zeros(out_features, num_groups, 
+                                  dtype=weight_param.dtype, 
+                                  device=weight_param.device)
+                
+                # 按组计算缩放因子
+                for group_id in range(num_groups):
+                    start_col = group_id * group_size
+                    end_col = min(start_col + group_size, in_features)
+                    
+                    # 获取当前组的权重
+                    w_group = weight_param[:, start_col:end_col]
+                    
+                    # 根据量化位数计算缩放因子
+                    if model_args.w_bits == 1 or model_args.w_bits == 0:
+                        # 1位量化：使用当前组权重绝对值的均值
+                        group_scale = torch.mean(w_group.abs(), dim=-1, keepdim=False)
+                    elif model_args.w_bits == 2:
+                        # 2位量化：使用当前组权重绝对值的最大值
+                        group_scale = torch.max(w_group.abs(), dim=-1, keepdim=False)[0]
+                    elif model_args.w_bits == 3 or model_args.w_bits == 4:
+                        # 3-4位量化：计算量化范围内的缩放因子
+                        group_max = torch.max(w_group.abs(), dim=-1, keepdim=False)[0]
+                        maxq = 2 ** (model_args.w_bits - 1) - 1
+                        group_scale = group_max / maxq
+                    else:
+                        raise NotImplementedError(f"Unsupported quantization bits: {model_args.w_bits}")
+                    
+                    # 设置最小缩放因子，避免数值不稳定
+                    eps = 1e-5
+                    group_scale = torch.clamp(group_scale, min=eps)
+                    
+                    # 将缩放因子保存到对应位置
+                    scale[:, group_id] = group_scale
+                
                 # 将计算出的缩放因子复制到参数中
                 param.data.copy_(scale)
 
