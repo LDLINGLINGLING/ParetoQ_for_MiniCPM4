@@ -421,10 +421,26 @@ class GroupedLsqQuantization(torch.autograd.Function):
 class GroupedStretchedElasticQuant(torch.autograd.Function):
     """
     分组Stretched Elastic量化
+    
+    采用与GPTQ相同的分组方式：按输入特征维度进行分组，
+    形状为 [out_features, in_features] 的权重矩阵中，
+    每个分组包含连续的 group_size 个输入特征。
+    
+    Stretched Elastic量化使用特殊的量化范围和级别计算方式，
+    提供更灵活的量化策略。
     """
     @staticmethod
     def forward(ctx, input, alpha, num_bits, group_size):
-
+        """
+        前向传播：执行分组Stretched Elastic量化
+        
+        :param ctx: PyTorch自动求导上下文
+        :param input: 输入权重张量，形状为 [out_features, in_features]
+        :param alpha: 每组的缩放因子，形状为 [out_features, num_groups]
+        :param num_bits: 量化位数
+        :param group_size: 每组的大小
+        :return: 分组量化后的权重，形状与input相同
+        """
         ctx.num_bits = num_bits
         ctx.group_size = group_size
         
@@ -437,18 +453,12 @@ class GroupedStretchedElasticQuant(torch.autograd.Function):
         out_features, in_features = input.shape
         num_groups = (in_features + group_size - 1) // group_size
         
-        # 将输入重塑为分组形式
-        padded_in_features = num_groups * group_size
-        if in_features != padded_in_features:
-            padding = torch.zeros(out_features, padded_in_features - in_features,
-                                device=input.device, dtype=input.dtype)
-            input_padded = torch.cat([input, padding], dim=1)
-        else:
-            input_padded = input
-            
-        input_grouped = input_padded.view(out_features, num_groups, group_size)
-        alpha_expanded = alpha.unsqueeze(-1)
+        # === 采用与GPTQ相同的分组方式 ===
+        # 创建分组索引，与GPTQ保持一致
+        g_idx = torch.tensor([i // group_size for i in range(in_features)], 
+                           dtype=torch.int32, device=input.device)
         
+        # Stretched Elastic量化的特殊参数
         clip_val = 1 - 1e-2
         if num_bits == 0:
             n_levels = 1.5
@@ -462,58 +472,115 @@ class GroupedStretchedElasticQuant(torch.autograd.Function):
         
         grad_scale = 1.0 / math.sqrt(input.numel() * Qp) if Qp else 1.0 / math.sqrt(input.numel())
         
-        ctx.save_for_backward(input_grouped, alpha)
-        ctx.other = grad_scale, Qn, Qp, out_features, in_features, n_levels, shift, clip_val
+        # === 执行分组量化 ===
+        w_q = torch.zeros_like(input)
         
-        if num_bits == 1:
-            q_w = input_grouped.sign()
-        else:
-            q_w = (torch.round(torch.clamp(input_grouped / alpha_expanded, -clip_val, clip_val) * n_levels - shift) + shift) / n_levels
+        # 按组进行量化，与GPTQ的分组逻辑一致
+        for group_id in range(num_groups):
+            # 计算当前组的列范围
+            start_col = group_id * group_size
+            end_col = min(start_col + group_size, in_features)
             
-        w_q_grouped = q_w * alpha_expanded
-        w_q_padded = w_q_grouped.view(out_features, padded_in_features)
-        w_q = w_q_padded[:, :in_features]
+            # 获取当前组的权重
+            w_group = input[:, start_col:end_col]  # [out_features, current_group_size]
+            
+            # 获取当前组的缩放因子
+            alpha_group = alpha[:, group_id:group_id+1]  # [out_features, 1]
+            
+            # === 执行Stretched Elastic量化操作 ===
+            if num_bits == 1:
+                # 1位量化：直接取符号
+                q_w_group = w_group.sign()
+            else:
+                # Stretched Elastic量化：使用特殊的量化公式
+                normalized = w_group / alpha_group
+                clamped = torch.clamp(normalized, -clip_val, clip_val)
+                scaled = clamped * n_levels - shift
+                rounded = torch.round(scaled)
+                q_w_group = (rounded + shift) / n_levels
+                
+            # === 反量化：将量化后的值乘以缩放因子得到最终结果 ===
+            w_q_group = q_w_group * alpha_group
+            
+            # 将量化后的权重放回对应位置
+            w_q[:, start_col:end_col] = w_q_group
+        
+        # === 保存前向传播信息供反向传播使用 ===
+        ctx.save_for_backward(input, alpha, g_idx)
+        ctx.other = grad_scale, Qn, Qp, out_features, in_features, n_levels, shift, clip_val
         
         return w_q
     
     @staticmethod
     def backward(ctx, grad_output):
+        """
+        反向传播：计算梯度
+        
+        :param ctx: 前向传播保存的上下文信息
+        :param grad_output: 来自上层的梯度，形状为 [out_features, in_features]
+        :return: (grad_input, grad_alpha, None, None)
+        """
         if ctx.num_bits >= 16:
             return grad_output, None, None, None
             
-        input_grouped, alpha = ctx.saved_tensors
+        # === 从上下文恢复保存的信息 ===
+        input, alpha, g_idx = ctx.saved_tensors
         grad_scale, Qn, Qp, out_features, in_features, n_levels, shift, clip_val = ctx.other
-        
-        num_groups = input_grouped.shape[1]
         group_size = ctx.group_size
-        padded_in_features = num_groups * group_size
         
-        if in_features != padded_in_features:
-            padding = torch.zeros(out_features, padded_in_features - in_features,
-                                device=grad_output.device, dtype=grad_output.dtype)
-            grad_output_padded = torch.cat([grad_output, padding], dim=1)
-        else:
-            grad_output_padded = grad_output
+        # 计算分组数量
+        num_groups = (in_features + group_size - 1) // group_size
+        
+        # 初始化梯度
+        grad_input = torch.zeros_like(input)
+        grad_alpha = torch.zeros_like(alpha)
+        
+        # === 按组计算梯度，与前向传播保持一致 ===
+        for group_id in range(num_groups):
+            # 计算当前组的列范围
+            start_col = group_id * group_size
+            end_col = min(start_col + group_size, in_features)
             
-        grad_output_grouped = grad_output_padded.view(out_features, num_groups, group_size)
-        alpha_expanded = alpha.unsqueeze(-1)
+            # 获取当前组的权重和梯度
+            w_group = input[:, start_col:end_col]  # [out_features, current_group_size]
+            grad_output_group = grad_output[:, start_col:end_col]  # [out_features, current_group_size]
+            
+            # 获取当前组的缩放因子
+            alpha_group = alpha[:, group_id:group_id+1]  # [out_features, 1]
+            
+            # === 计算量化指示器 ===
+            # 计算归一化后的权重值
+            q_w = w_group / alpha_group
+            # 使用clip_val作为边界，而不是原来的Qn/Qp
+            indicate_small = (q_w < -clip_val).float()
+            indicate_big = (q_w > clip_val).float()
+            indicate_middle = 1.0 - indicate_small - indicate_big
+            
+            # === 计算缩放因子alpha的梯度 ===
+            if ctx.num_bits == 1:
+                # 1位量化：alpha的梯度与权重符号相关
+                grad_alpha_group = (w_group.sign() * grad_output_group * grad_scale).sum(dim=-1, keepdim=True)
+            else:
+                # Stretched Elastic量化的梯度计算
+                # 重新计算量化值用于梯度计算
+                clamped_q_w = torch.clamp(q_w, -clip_val, clip_val)
+                scaled = clamped_q_w * n_levels - shift
+                rounded = torch.round(scaled)
+                quantized_normalized = (rounded + shift) / n_levels
+                
+                grad_alpha_group = ((indicate_small * Qn + indicate_big * Qp + 
+                                   indicate_middle * (-q_w + quantized_normalized)) * 
+                                  grad_output_group * grad_scale).sum(dim=-1, keepdim=True)
+            
+            # === 计算输入权重的梯度 ===
+            # 使用直通估计器：只有在量化范围内的权重才传递梯度
+            grad_input_group = indicate_middle * grad_output_group
+            
+            # 将梯度放回对应位置
+            grad_input[:, start_col:end_col] = grad_input_group
+            grad_alpha[:, group_id:group_id+1] = grad_alpha_group
         
-        q_w = input_grouped / alpha_expanded
-        indicate_small = (q_w < -clip_val).float()
-        indicate_big = (q_w > clip_val).float()
-        indicate_middle = 1.0 - indicate_small - indicate_big
-        
-        if ctx.num_bits == 1:
-            grad_alpha = (input_grouped.sign() * grad_output_grouped * grad_scale).sum(dim=-1)
-        else:
-            grad_alpha = ((indicate_small * Qn + indicate_big * Qp + 
-                          indicate_middle * (-q_w + (torch.round(torch.clamp(q_w, -clip_val, clip_val) * n_levels - shift) + shift) / n_levels)) * 
-                         grad_output_grouped * grad_scale).sum(dim=-1)
-        
-        grad_input_grouped = indicate_middle * grad_output_grouped
-        grad_input_padded = grad_input_grouped.view(out_features, padded_in_features)
-        grad_input = grad_input_padded[:, :in_features]
-        
+        # 返回梯度：(输入梯度, alpha梯度, num_bits梯度=None, group_size梯度=None)
         return grad_input, grad_alpha, None, None
 
 
