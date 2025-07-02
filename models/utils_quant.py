@@ -254,22 +254,24 @@ class GroupedLsqQuantization(torch.autograd.Function):
     每个分组包含连续的 group_size 个输入特征。
     """
     @staticmethod
-    def forward(ctx, input, alpha, num_bits, group_size):
+    def forward(ctx, input, alpha, zero, num_bits, group_size):
         """
         前向传播：执行分组LSQ量化
         
         :param ctx: PyTorch自动求导上下文，用于保存反向传播需要的信息
         :param input: 输入权重张量，形状为 [out_features, in_features]
-                     通常是神经网络层的权重矩阵
         :param alpha: 每组的缩放因子，形状为 [out_features, num_groups]
-                     每个输出特征的每个分组都有独立的缩放因子
+        :param zero: 每组的零点，形状为 [out_features, num_groups]
         :param num_bits: 量化位数，支持1-4位量化
-                        1位对应二值化，2-4位对应多级量化
         :param group_size: 每组的大小，即每组包含多少个输入特征
-                          input_features会被分成若干个这样大小的组
         :return: 分组量化后的权重，形状与input相同 [out_features, in_features]
         """
         # 保存量化参数到上下文，供反向传播使用
+        if torch.isnan(zero).any():
+            raise ValueError("zero weights contain NaN values. Please check the input and parameters.")
+
+        if torch.isnan(alpha).any():
+            raise ValueError("alpha weights contain NaN values. Please check the input and parameters.")
         ctx.num_bits = num_bits
         ctx.group_size = group_size
         
@@ -292,53 +294,80 @@ class GroupedLsqQuantization(torch.autograd.Function):
         eps = torch.tensor(1e-5, device=alpha.device, dtype=alpha.dtype)
         # 确保alpha不会太小，避免数值不稳定
         alpha = torch.where(alpha > eps, alpha, eps)
+        alpha = torch.where(alpha < -eps, alpha, -eps)
         
         # 计算分组相关的维度信息
         out_features, in_features = input.shape
         # 计算需要多少个组（向上取整）
         num_groups = (in_features + group_size - 1) // group_size
         
-        # === 采用与GPTQ相同的分组方式 ===
-        # 创建分组索引，与GPTQ保持一致
+        # === 在forward内初始化g_idx，确保与当前设备和输入匹配 ===
         g_idx = torch.tensor([i // group_size for i in range(in_features)], 
                            dtype=torch.int32, device=input.device)
         
-        # 计算梯度缩放因子，用于反向传播时的梯度归一化
-        grad_scale = 1.0 / math.sqrt(input.numel() * Qp) if Qp else 1.0 / math.sqrt(input.numel())
+        # === 修正grad_scale计算 ===
+        # 梯度缩放因子应该基于每组的实际元素数量，而不是整个张量
+        # 使用sqrt(group_size * out_features)来归一化每组的梯度
+        if Qp != 0:
+            grad_scale = 1.0 / math.sqrt(group_size * out_features * Qp)
+        else:
+            grad_scale = 1.0 / math.sqrt(group_size * out_features)
         
-        # === 执行分组量化 ===
-        w_q = torch.zeros_like(input)
+        # === 使用向量化操作减少for循环 ===
+        # 将输入重塑为分组形状，便于批量处理
+        padded_in_features = num_groups * group_size
+        if in_features < padded_in_features:
+            # 如果需要，对输入进行填充
+            input_padded = torch.cat([input, torch.zeros(out_features, padded_in_features - in_features, 
+                                                       device=input.device, dtype=input.dtype)], dim=1)
+        else:
+            input_padded = input
         
-        # 按组进行量化，与GPTQ的分组逻辑一致
-        for group_id in range(num_groups):
-            # 计算当前组的列范围
-            start_col = group_id * group_size
-            end_col = min(start_col + group_size, in_features)
+        # 重塑为 [out_features, num_groups, group_size]
+        w_grouped = input_padded.view(out_features, num_groups, group_size)
+        
+        # 扩展alpha和zero的维度以匹配分组权重
+        alpha_expanded = alpha.unsqueeze(-1)  # [out_features, num_groups, 1]
+        
+        # === 实现zero_scale逻辑 ===
+        if zero is not None:
+            zero_expanded = zero.unsqueeze(-1)  # [out_features, num_groups, 1]
+            # 对zero进行缩放，确保其在合理范围内
+            zero_scale = 0.1  # 零点缩放因子，可以作为超参数调整
+            zero_scaled = zero_expanded# * zero_scale
+        else:
+            zero_scaled = torch.zeros_like(alpha_expanded)
+        
+        # === 执行向量化量化操作 ===
+        if num_bits == 1:
+            # 1位量化：直接取符号
+            q_w_grouped = w_grouped.sign()
+            # 对于1位量化，零点通常不使用
+            w_q_grouped = q_w_grouped * alpha_expanded
+        else:
             
-            # 获取当前组的权重
-            w_group = input[:, start_col:end_col]  # [out_features, current_group_size]
-            
-            # 获取当前组的缩放因子
-            alpha_group = alpha[:, group_id:group_id+1]  # [out_features, 1]
-            
-            # === 执行量化操作 ===
-            if num_bits == 1:
-                # 1位量化：直接取符号，结果为 -1 或 +1
-                q_w_group = w_group.sign()
-            else:
-                # 多位量化：先归一化，然后四舍五入，最后限制在量化范围内
-                q_w_group = (w_group / alpha_group).round().clamp(Qn, Qp)
-                
-            # === 反量化：将量化后的值乘以缩放因子得到最终结果 ===
-            w_q_group = q_w_group * alpha_group
-            
-            # 将量化后的权重放回对应位置
-            w_q[:, start_col:end_col] = w_q_group
+            # 多位量化：先减去零点，归一化，然后四舍五入，最后限制在量化范围内
+            normalized_w = (w_grouped - zero_scaled) / alpha_expanded
+            q_w_grouped = normalized_w.round().clamp(Qn, Qp)
+            if torch.isnan(zero_scaled).any().item() :
+                raise ValueError("zero_scaled weights contain NaN values. Please check the input and parameters.")
+            if torch.isnan(w_grouped).any().item() != torch.isnan(normalized_w).any().item():
+                raise ValueError("divide weights contain NaN values. Please check the input and parameters.")
+
+            # 反量化：恢复到原始尺度
+            w_q_grouped = q_w_grouped * alpha_expanded + zero_scaled
+        
+        # 重塑回原始形状
+        w_q_padded = w_q_grouped.view(out_features, padded_in_features)
+        
+        # 如果之前进行了填充，需要截取到原始大小
+        w_q = w_q_padded[:, :in_features]
         
         # === 保存前向传播信息供反向传播使用 ===
-        ctx.save_for_backward(input, alpha, g_idx)
-        ctx.other = grad_scale, Qn, Qp, out_features, in_features
-        
+        ctx.save_for_backward(input, alpha, zero, g_idx)
+        ctx.other = grad_scale, Qn, Qp, out_features, in_features, zero_scale if zero is not None else 0.0
+        if torch.isnan(w_q).any():
+            raise ValueError("Quantized weights contain NaN values. Please check the input and parameters.")
         return w_q
     
     @staticmethod
@@ -352,70 +381,94 @@ class GroupedLsqQuantization(torch.autograd.Function):
         
         :param ctx: 前向传播保存的上下文信息
         :param grad_output: 来自上层的梯度，形状为 [out_features, in_features]
-        :return: (grad_input, grad_alpha, None, None)
-                grad_input: 对输入权重的梯度
-                grad_alpha: 对缩放因子的梯度
-                后两个None对应num_bits和group_size（不需要梯度）
+        :return: (grad_input, grad_alpha, grad_zero, None, None)
         """
+
         # 如果不量化，直接传递梯度
         if ctx.num_bits >= 16:
-            return grad_output, None, None, None
-            
+            return grad_output, None, None, None, None
+        if torch.isnan(grad_output).any():
+            raise ValueError("Gradient output contains NaN values. Please check the input and parameters.")
         # === 从上下文恢复保存的信息 ===
-        input, alpha, g_idx = ctx.saved_tensors
-        grad_scale, Qn, Qp, out_features, in_features = ctx.other
+        input, alpha, zero, g_idx = ctx.saved_tensors
+        grad_scale, Qn, Qp, out_features, in_features, zero_scale = ctx.other
         group_size = ctx.group_size
         
         # 计算分组数量
         num_groups = (in_features + group_size - 1) // group_size
         
-        # 初始化梯度
-        grad_input = torch.zeros_like(input)
-        grad_alpha = torch.zeros_like(alpha)
+        # === 使用向量化操作计算梯度 ===
+        padded_in_features = num_groups * group_size
         
-        # === 按组计算梯度，与前向传播保持一致 ===
-        for group_id in range(num_groups):
-            # 计算当前组的列范围
-            start_col = group_id * group_size
-            end_col = min(start_col + group_size, in_features)
-            
-            # 获取当前组的权重和梯度
-            w_group = input[:, start_col:end_col]  # [out_features, current_group_size]
-            grad_output_group = grad_output[:, start_col:end_col]  # [out_features, current_group_size]
-            
-            # 获取当前组的缩放因子
-            alpha_group = alpha[:, group_id:group_id+1]  # [out_features, 1]
-            
-            # === 计算量化指示器 ===
+        # 对梯度进行填充（如果需要）
+        if in_features < padded_in_features:
+            grad_output_padded = torch.cat([grad_output, torch.zeros(out_features, padded_in_features - in_features, 
+                                                                   device=grad_output.device, dtype=grad_output.dtype)], dim=1)
+            input_padded = torch.cat([input, torch.zeros(out_features, padded_in_features - in_features, 
+                                                       device=input.device, dtype=input.dtype)], dim=1)
+        else:
+            grad_output_padded = grad_output
+            input_padded = input
+        
+        # 重塑为分组形状
+        grad_output_grouped = grad_output_padded.view(out_features, num_groups, group_size)
+        w_grouped = input_padded.view(out_features, num_groups, group_size)
+        
+        # 扩展alpha维度
+        alpha_expanded = alpha.unsqueeze(-1)  # [out_features, num_groups, 1]
+        
+        # 处理zero
+        if zero is not None:
+            zero_expanded = zero.unsqueeze(-1)
+            zero_scaled = zero_expanded * zero_scale
+        else:
+            zero_expanded = torch.zeros_like(alpha_expanded)
+            zero_scaled = zero_expanded
+        
+        # === 向量化计算量化指示器 ===
+        if ctx.num_bits == 1:
+            # 1位量化的梯度计算
+            grad_alpha_grouped = (w_grouped.sign() * grad_output_grouped * grad_scale).sum(dim=-1, keepdim=True)
+            grad_input_grouped = grad_output_grouped  # 直通估计器
+            grad_zero_grouped = torch.zeros_like(alpha_expanded) if zero is not None else None
+        else:
             # 计算归一化后的权重值
-            q_w = w_group / alpha_group
-            # 小于量化下界的权重位置
+            q_w = (w_grouped - zero_scaled) / alpha_expanded
+            # 量化指示器
             indicate_small = (q_w < Qn).float()
-            # 大于量化上界的权重位置
             indicate_big = (q_w > Qp).float()
-            # 在量化范围内的权重位置（这些位置会传递梯度）
             indicate_middle = 1.0 - indicate_small - indicate_big
             
-            # === 计算缩放因子alpha的梯度 ===
-            if ctx.num_bits == 1:
-                # 1位量化：alpha的梯度与权重符号相关
-                grad_alpha_group = (w_group.sign() * grad_output_group * grad_scale).sum(dim=-1, keepdim=True)
+            # 计算alpha的梯度
+            grad_alpha_grouped = ((indicate_small * Qn + indicate_big * Qp + 
+                                 indicate_middle * (-q_w + q_w.round())) * 
+                                grad_output_grouped * grad_scale).sum(dim=-1, keepdim=True)
+            
+            # 计算输入权重的梯度（直通估计器）
+            grad_input_grouped = indicate_middle * grad_output_grouped
+            
+            # 计算zero的梯度
+            if zero is not None:
+                grad_zero_grouped = (-(indicate_small * Qn + indicate_big * Qp + 
+                                     indicate_middle * (-q_w + q_w.round())) * 
+                                   grad_output_grouped * grad_scale * zero_scale).sum(dim=-1, keepdim=True)
             else:
-                # 多位量化：alpha的梯度包含三部分
-                grad_alpha_group = ((indicate_small * Qn + indicate_big * Qp + 
-                                   indicate_middle * (-q_w + q_w.round())) * 
-                                  grad_output_group * grad_scale).sum(dim=-1, keepdim=True)
-            
-            # === 计算输入权重的梯度 ===
-            # 使用直通估计器：只有在量化范围内的权重才传递梯度
-            grad_input_group = indicate_middle * grad_output_group
-            
-            # 将梯度放回对应位置
-            grad_input[:, start_col:end_col] = grad_input_group
-            grad_alpha[:, group_id:group_id+1] = grad_alpha_group
+                grad_zero_grouped = None
         
-        # 返回梯度：(输入梯度, alpha梯度, num_bits梯度=None, group_size梯度=None)
-        return grad_input, grad_alpha, None, None
+        # 重塑回原始形状
+        grad_input_padded = grad_input_grouped.view(out_features, padded_in_features)
+        grad_input = grad_input_padded[:, :in_features]
+        
+        grad_alpha = grad_alpha_grouped.squeeze(-1)  # [out_features, num_groups]
+        
+        if grad_zero_grouped is not None:
+            grad_zero = grad_zero_grouped.squeeze(-1)  # [out_features, num_groups]
+        else:
+            grad_zero = None
+        # import pdb
+        # pdb.set_trace()
+        # 返回梯度：(输入梯度, alpha梯度, zero梯度, num_bits梯度=None, group_size梯度=None)
+        return grad_input, grad_alpha, grad_zero, None, None
 
 
 class GroupedStretchedElasticQuant(torch.autograd.Function):
@@ -627,23 +680,29 @@ class QuantizeLinear(nn.Linear):
                 # 计算分组数量（向上取整）
                 num_groups = (in_features + group_size - 1) // group_size
                 
-                # 创建分组索引，与GPTQ保持一致
+                # === g_idx应该在这里初始化并注册为buffer ===
+                # 这样可以确保它随模型一起保存和加载，并自动处理设备转移
                 self.register_buffer('g_idx', 
                     torch.tensor([i // group_size for i in range(in_features)], 
                                dtype=torch.int32))
                 
                 # 每个输出特征的每个分组都有独立的缩放因子
                 # 形状：[out_features, num_groups]
-                self.weight_clip_val = nn.Parameter(torch.Tensor(out_features, num_groups))
+                scale_tensor = torch.full((out_features, num_groups), 0.01, dtype=torch.float32)
+                zero_tensor = torch.zeros(out_features, num_groups, dtype=torch.float32)
                 
-                # 存储分组信息用于调试和兼容性
-                self.num_groups = num_groups
-                self.padded_in_features = num_groups * group_size
+                # 确保创建的tensor是有效的
+                assert torch.all(torch.isfinite(scale_tensor)), "Scale tensor contains invalid values"
+                assert torch.all(torch.isfinite(zero_tensor)), "Zero tensor contains invalid values"
+                
+                self.scale = nn.Parameter(scale_tensor)
+                self.zero = nn.Parameter(zero_tensor)
             else:
                 # === 原始的逐行量化 ===
                 # 每个输出特征一个缩放因子
                 # 形状：[out_features, 1]
-                self.weight_clip_val = nn.Parameter(torch.Tensor(self.weight.shape[0], 1))
+                self.scale = nn.Parameter(torch.Tensor(self.weight.shape[0], 1))
+                nn.init.constant_(self.scale, 0.01)
     
     def forward(self, input_):
         """
@@ -665,7 +724,7 @@ class QuantizeLinear(nn.Linear):
                 # 使用分组Stretched Elastic量化
                 weight = GroupedStretchedElasticQuant.apply(
                     real_weights,
-                    self.weight_clip_val,
+                    self.scale,
                     self.w_bits,
                     self.group_size,
                 ).to(input_.dtype)
@@ -673,7 +732,8 @@ class QuantizeLinear(nn.Linear):
                 # 使用分组LSQ量化
                 weight = GroupedLsqQuantization.apply(
                     real_weights,
-                    self.weight_clip_val,
+                    self.scale,
+                    self.zero,
                     self.w_bits,
                     self.group_size,
                 ).to(input_.dtype)
@@ -685,7 +745,7 @@ class QuantizeLinear(nn.Linear):
                 # 使用原始Stretched Elastic量化
                 weight = StretchedElasticQuant.apply(
                     real_weights,
-                    self.weight_clip_val,
+                    self.scale,
                     self.w_bits,
                     self.weight_layerwise,
                 ).to(input_.dtype)
@@ -693,20 +753,24 @@ class QuantizeLinear(nn.Linear):
                 # 使用原始LSQ量化
                 weight = LsqBinaryTernaryExtension.apply(
                     real_weights,
-                    self.weight_clip_val,
+                    self.scale,
                     self.w_bits,
                     self.weight_layerwise,
                 ).to(input_.dtype)
             else:
                 raise NotImplementedError(f"逐行量化不支持 {self.w_bits} 位量化")
-        
+        if torch.isnan(weight).any().item():
+            raise ValueError("weight contains NaN values. Please check the input and parameters.")
+        if torch.isnan(input_).any().item():
+            raise ValueError("input_ contains NaN values. Please check the input and parameters.")
         # 执行线性变换
         out = nn.functional.linear(input_, weight)
         
         # 添加偏置（如果有的话）
         if self.bias is not None:
             out += self.bias.view(1, -1).expand_as(out)
-            
+        if torch.isnan(out).any().item():
+            raise ValueError("Output contains NaN values. Please check the input and parameters.")
         return out
     
     def extra_repr(self):
@@ -743,7 +807,7 @@ class QuantizeLinear(nn.Linear):
             'in_features': self.in_features,
             'out_features': self.out_features,
             'padded_in_features': self.padded_in_features,
-            'weight_clip_val_shape': self.weight_clip_val.shape
+            'scale_shape': self.scale.shape
         }
     
     def set_grouping_from_gptq(self, scale, zero, g_idx):
@@ -765,9 +829,9 @@ class QuantizeLinear(nn.Linear):
         if not torch.equal(g_idx, expected_g_idx):
             print("警告：GPTQ的分组索引与当前设置不完全匹配，可能影响兼容性")
         
-        # 将GPTQ的scale转换为ParetoQ的weight_clip_val格式
-        if scale.shape == self.weight_clip_val.shape:
+        # 将GPTQ的scale转换为ParetoQ的scale格式
+        if scale.shape == self.scale.shape:
             with torch.no_grad():
-                self.weight_clip_val.copy_(scale)
+                self.scale.copy_(scale)
         else:
-            raise ValueError(f"GPTQ的scale形状 {scale.shape} 与期望形状 {self.weight_clip_val.shape} 不匹配")
+            raise ValueError(f"GPTQ的scale形状 {scale.shape} 与期望形状 {self.scale.shape} 不匹配")
