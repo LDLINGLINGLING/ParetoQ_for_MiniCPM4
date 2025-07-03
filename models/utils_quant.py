@@ -248,226 +248,162 @@ class GroupedLsqQuantization(torch.autograd.Function):
     LSQ (Learned Step-size Quantization) 的分组版本，将权重矩阵按列分组，
     每组使用独立的量化缩放因子。这样可以更好地适应权重分布的差异，
     提高量化精度。
-    
-    采用与GPTQ相同的分组方式：按输入特征维度进行分组，
-    形状为 [out_features, in_features] 的权重矩阵中，
-    每个分组包含连续的 group_size 个输入特征。
     """
+    
     @staticmethod
     def forward(ctx, input, alpha, zero, num_bits, group_size):
         """
         前向传播：执行分组LSQ量化
-        
-        :param ctx: PyTorch自动求导上下文，用于保存反向传播需要的信息
-        :param input: 输入权重张量，形状为 [out_features, in_features]
-        :param alpha: 每组的缩放因子，形状为 [out_features, num_groups]
-        :param zero: 每组的零点，形状为 [out_features, num_groups]
-        :param num_bits: 量化位数，支持1-4位量化
-        :param group_size: 每组的大小，即每组包含多少个输入特征
-        :return: 分组量化后的权重，形状与input相同 [out_features, in_features]
         """
-        # 保存量化参数到上下文，供反向传播使用
-        if torch.isnan(zero).any():
-            raise ValueError("zero weights contain NaN values. Please check the input and parameters.")
-
+        # 输入验证
+        if torch.isnan(input).any():
+            raise ValueError("Input contains NaN values")
         if torch.isnan(alpha).any():
-            raise ValueError("alpha weights contain NaN values. Please check the input and parameters.")
+            raise ValueError("Alpha contains NaN values")
+        if zero is not None and torch.isnan(zero).any():
+            raise ValueError("Zero contains NaN values")
+            
+        # 保存量化参数
         ctx.num_bits = num_bits
         ctx.group_size = group_size
         
-        # 如果量化位数>=16，相当于不量化，直接返回原始输入
+        # 如果量化位数>=16，相当于不量化
         if num_bits >= 16:
             return input
             
-        # 根据量化位数确定量化范围
-        if num_bits == 1 or num_bits == 0:
-            # 1位量化：二值化，范围为 [-1, 1]
-            Qn = -1  # 量化下界
-            Qp = 1   # 量化上界
+        # 确定量化范围
+        if num_bits == 1:
+            Qn, Qp = -1, 1
         else:
-            # 多位量化：对称量化，范围为 [-(2^(n-1)), 2^(n-1)-1]
-            # 例如3位量化范围为 [-4, 3]
-            Qn = -(2 ** (num_bits - 1))      # 量化下界
-            Qp = 2 ** (num_bits - 1) - 1     # 量化上界
+            Qn = -(2 ** (num_bits - 1))
+            Qp = 2 ** (num_bits - 1) - 1
             
-        # 设置数值稳定性的最小值，防除零错误
+        # 数值稳定性处理
         eps = torch.tensor(1e-5, device=alpha.device, dtype=alpha.dtype)
-        # 确保alpha不会太小，避免数值不稳定
-        alpha = torch.where(alpha > eps, alpha, eps)
-        alpha = torch.where(alpha < -eps, alpha, -eps)
+        alpha = torch.clamp(alpha, min=eps)
         
-        # 计算分组相关的维度信息
+        # 计算分组信息
         out_features, in_features = input.shape
-        # 计算需要多少个组（向上取整）
         num_groups = (in_features + group_size - 1) // group_size
         
-        # === 在forward内初始化g_idx，确保与当前设备和输入匹配 ===
-        g_idx = torch.tensor([i // group_size for i in range(in_features)], 
-                           dtype=torch.int32, device=input.device)
+        # 梯度缩放因子 - 参考原始LSQ论文
+        grad_scale = 1.0 / math.sqrt(group_size * out_features * Qp) if Qp != 0 else 1.0
         
-        # === 修正grad_scale计算 ===
-        # 梯度缩放因子应该基于每组的实际元素数量，而不是整个张量
-        # 使用sqrt(group_size * out_features)来归一化每组的梯度
-        if Qp != 0:
-            grad_scale = 1.0 / math.sqrt(group_size * out_features * Qp)
-        else:
-            grad_scale = 1.0 / math.sqrt(group_size * out_features)
-        
-        # === 使用向量化操作减少for循环 ===
-        # 将输入重塑为分组形状，便于批量处理
+        # 向量化分组处理
         padded_in_features = num_groups * group_size
         if in_features < padded_in_features:
-            # 如果需要，对输入进行填充
-            input_padded = torch.cat([input, torch.zeros(out_features, padded_in_features - in_features, 
-                                                       device=input.device, dtype=input.dtype)], dim=1)
+            input_padded = torch.cat([
+                input, 
+                torch.zeros(out_features, padded_in_features - in_features, 
+                           device=input.device, dtype=input.dtype)
+            ], dim=1)
         else:
             input_padded = input
-        
-        # 重塑为 [out_features, num_groups, group_size]
+            
+        # 重塑为分组形状
         w_grouped = input_padded.view(out_features, num_groups, group_size)
-        
-        # 扩展alpha和zero的维度以匹配分组权重
         alpha_expanded = alpha.unsqueeze(-1)  # [out_features, num_groups, 1]
         
-        # === 实现zero_scale逻辑 ===
+        # 处理零点
         if zero is not None:
-            zero_expanded = zero.unsqueeze(-1)  # [out_features, num_groups, 1]
-            # 对zero进行缩放，确保其在合理范围内
-            zero_scale = 0.1  # 零点缩放因子，可以作为超参数调整
-            zero_scaled = zero_expanded# * zero_scale
+            zero_expanded = zero.unsqueeze(-1)
         else:
-            zero_scaled = torch.zeros_like(alpha_expanded)
-        
-        # === 执行向量化量化操作 ===
+            zero_expanded = torch.zeros_like(alpha_expanded)
+            
+        # 执行量化
         if num_bits == 1:
-            # 1位量化：直接取符号
+            # 二值量化
             q_w_grouped = w_grouped.sign()
-            # 对于1位量化，零点通常不使用
             w_q_grouped = q_w_grouped * alpha_expanded
         else:
-            
-            # 多位量化：先减去零点，归一化，然后四舍五入，最后限制在量化范围内
-            normalized_w = (w_grouped - zero_scaled) / alpha_expanded
+            # 多位量化
+            normalized_w = (w_grouped - zero_expanded) / alpha_expanded
             q_w_grouped = normalized_w.round().clamp(Qn, Qp)
-            if torch.isnan(zero_scaled).any().item() :
-                raise ValueError("zero_scaled weights contain NaN values. Please check the input and parameters.")
-            if torch.isnan(w_grouped).any().item() != torch.isnan(normalized_w).any().item():
-                raise ValueError("divide weights contain NaN values. Please check the input and parameters.")
-
-            # 反量化：恢复到原始尺度
-            w_q_grouped = q_w_grouped * alpha_expanded + zero_scaled
-        
+            w_q_grouped = q_w_grouped * alpha_expanded + zero_expanded
+            
         # 重塑回原始形状
         w_q_padded = w_q_grouped.view(out_features, padded_in_features)
-        
-        # 如果之前进行了填充，需要截取到原始大小
         w_q = w_q_padded[:, :in_features]
         
-        # === 保存前向传播信息供反向传播使用 ===
-        ctx.save_for_backward(input, alpha, zero, g_idx)
-        ctx.other = grad_scale, Qn, Qp, out_features, in_features, zero_scale if zero is not None else 0.0
-        if torch.isnan(w_q).any():
-            raise ValueError("Quantized weights contain NaN values. Please check the input and parameters.")
+        # 保存反向传播需要的信息
+        ctx.save_for_backward(input, alpha, zero)
+        ctx.other = (grad_scale, Qn, Qp, out_features, in_features, 
+                    w_grouped, alpha_expanded, zero_expanded, q_w_grouped)
+        
         return w_q
     
     @staticmethod
     def backward(ctx, grad_output):
         """
         反向传播：计算梯度
-        
-        计算量化操作对输入和缩放因子的梯度。
-        使用直通估计器(Straight-Through Estimator)的思想，
-        只有在量化范围内的权重才传递梯度。
-        
-        :param ctx: 前向传播保存的上下文信息
-        :param grad_output: 来自上层的梯度，形状为 [out_features, in_features]
-        :return: (grad_input, grad_alpha, grad_zero, None, None)
         """
-
-        # 如果不量化，直接传递梯度
+        # 基本检查
         if ctx.num_bits >= 16:
             return grad_output, None, None, None, None
+            
         if torch.isnan(grad_output).any():
-            raise ValueError("Gradient output contains NaN values. Please check the input and parameters.")
-        # === 从上下文恢复保存的信息 ===
-        input, alpha, zero, g_idx = ctx.saved_tensors
-        grad_scale, Qn, Qp, out_features, in_features, zero_scale = ctx.other
+            raise ValueError("Gradient output contains NaN values")
+            
+        # 恢复保存的信息
+        input, alpha, zero = ctx.saved_tensors
+        (grad_scale, Qn, Qp, out_features, in_features, 
+         w_grouped, alpha_expanded, zero_expanded, q_w_grouped) = ctx.other
         group_size = ctx.group_size
-        
-        # 计算分组数量
         num_groups = (in_features + group_size - 1) // group_size
         
-        # === 使用向量化操作计算梯度 ===
+        # 处理梯度填充
         padded_in_features = num_groups * group_size
-        
-        # 对梯度进行填充（如果需要）
         if in_features < padded_in_features:
-            grad_output_padded = torch.cat([grad_output, torch.zeros(out_features, padded_in_features - in_features, 
-                                                                   device=grad_output.device, dtype=grad_output.dtype)], dim=1)
-            input_padded = torch.cat([input, torch.zeros(out_features, padded_in_features - in_features, 
-                                                       device=input.device, dtype=input.dtype)], dim=1)
+            grad_output_padded = torch.cat([
+                grad_output, 
+                torch.zeros(out_features, padded_in_features - in_features, 
+                           device=grad_output.device, dtype=grad_output.dtype)
+            ], dim=1)
         else:
             grad_output_padded = grad_output
-            input_padded = input
-        
-        # 重塑为分组形状
+            
         grad_output_grouped = grad_output_padded.view(out_features, num_groups, group_size)
-        w_grouped = input_padded.view(out_features, num_groups, group_size)
         
-        # 扩展alpha维度
-        alpha_expanded = alpha.unsqueeze(-1)  # [out_features, num_groups, 1]
-        
-        # 处理zero
-        if zero is not None:
-            zero_expanded = zero.unsqueeze(-1)
-            zero_scaled = zero_expanded * zero_scale
-        else:
-            zero_expanded = torch.zeros_like(alpha_expanded)
-            zero_scaled = zero_expanded
-        
-        # === 向量化计算量化指示器 ===
+        # 计算梯度
         if ctx.num_bits == 1:
-            # 1位量化的梯度计算
+            # 二值量化梯度
             grad_alpha_grouped = (w_grouped.sign() * grad_output_grouped * grad_scale).sum(dim=-1, keepdim=True)
-            grad_input_grouped = grad_output_grouped  # 直通估计器
-            grad_zero_grouped = torch.zeros_like(alpha_expanded) if zero is not None else None
+            grad_input_grouped = grad_output_grouped
+            grad_zero_grouped = None
         else:
-            # 计算归一化后的权重值
-            q_w = (w_grouped - zero_scaled) / alpha_expanded
-            # 量化指示器
+            # 多位量化梯度
+            q_w = (w_grouped - zero_expanded) / alpha_expanded
+            
+            # 计算指示器
             indicate_small = (q_w < Qn).float()
             indicate_big = (q_w > Qp).float()
             indicate_middle = 1.0 - indicate_small - indicate_big
             
-            # 计算alpha的梯度
+            # Alpha梯度 - 根据LSQ论文公式
             grad_alpha_grouped = ((indicate_small * Qn + indicate_big * Qp + 
                                  indicate_middle * (-q_w + q_w.round())) * 
                                 grad_output_grouped * grad_scale).sum(dim=-1, keepdim=True)
             
-            # 计算输入权重的梯度（直通估计器）
+            # 输入梯度 - 直通估计器
             grad_input_grouped = indicate_middle * grad_output_grouped
             
-            # 计算zero的梯度
+            # Zero梯度
             if zero is not None:
-                grad_zero_grouped = (-(indicate_small * Qn + indicate_big * Qp + 
-                                     indicate_middle * (-q_w + q_w.round())) * 
-                                   grad_output_grouped * grad_scale * zero_scale).sum(dim=-1, keepdim=True)
+                grad_zero_grouped = ((indicate_small + indicate_big + indicate_middle) * 
+                                   grad_output_grouped * grad_scale).sum(dim=-1, keepdim=True)
             else:
                 grad_zero_grouped = None
         
         # 重塑回原始形状
         grad_input_padded = grad_input_grouped.view(out_features, padded_in_features)
         grad_input = grad_input_padded[:, :in_features]
-        
-        grad_alpha = grad_alpha_grouped.squeeze(-1)  # [out_features, num_groups]
+        grad_alpha = grad_alpha_grouped.squeeze(-1)
         
         if grad_zero_grouped is not None:
-            grad_zero = grad_zero_grouped.squeeze(-1)  # [out_features, num_groups]
+            grad_zero = grad_zero_grouped.squeeze(-1)
         else:
             grad_zero = None
-        # import pdb
-        # pdb.set_trace()
-        # 返回梯度：(输入梯度, alpha梯度, zero梯度, num_bits梯度=None, group_size梯度=None)
+            
         return grad_input, grad_alpha, grad_zero, None, None
 
 

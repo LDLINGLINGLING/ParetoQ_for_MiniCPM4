@@ -769,9 +769,9 @@ class MiniCPMMLP(nn.Module):
         self.config = config
         self.hidden_size = config.hidden_size
         self.intermediate_size = config.intermediate_size
-        self.gate_proj = QuantizeLinear(self.hidden_size, self.intermediate_size, bias=False, w_bits=config.w_bits, group_size=config.group_size, enable_groupwise=config.enable_groupwise)
-        self.up_proj = QuantizeLinear(self.hidden_size, self.intermediate_size, bias=False, w_bits=config.w_bits, group_size=config.group_size, enable_groupwise=config.enable_groupwise)
-        self.down_proj = QuantizeLinear(self.intermediate_size, self.hidden_size, bias=False, w_bits=config.w_bits, group_size=config.group_size, enable_groupwise=config.enable_groupwise)
+        self.gate_proj = QuantizeLinear(self.hidden_size, self.intermediate_size, bias=False,w_bits=4,group_size=128,enable_groupwise=True)
+        self.up_proj = QuantizeLinear(self.hidden_size, self.intermediate_size, bias=False,w_bits=4,group_size=128,enable_groupwise=True)
+        self.down_proj = QuantizeLinear(self.intermediate_size,self.hidden_size,  bias=False,w_bits=4,group_size=128,enable_groupwise=True)
         self.act_fn = ACT2FN[config.hidden_act]
 
     def forward(self, x):
@@ -839,10 +839,10 @@ class MiniCPMAttention(nn.Module):
                 f' and `num_heads`: {self.num_heads}).'
             )
 
-        self.q_proj = QuantizeLinear(self.hidden_size, self.num_heads * self.head_dim, bias=config.attention_bias, w_bits=config.w_bits, group_size=config.group_size, enable_groupwise=config.enable_groupwise)
-        self.k_proj = QuantizeLinear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=config.attention_bias, w_bits=config.w_bits, group_size=config.group_size, enable_groupwise=config.enable_groupwise)
-        self.v_proj = QuantizeLinear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=config.attention_bias, w_bits=config.w_bits, group_size=config.group_size, enable_groupwise=config.enable_groupwise)
-        self.o_proj = QuantizeLinear(self.num_heads * self.head_dim, self.hidden_size, bias=config.attention_bias, w_bits=config.w_bits, group_size=config.group_size, enable_groupwise=config.enable_groupwise)
+        self.q_proj = QuantizeLinear(self.hidden_size, self.num_heads * self.head_dim, bias=config.attention_bias,w_bits=4,group_size=128,enable_groupwise=True)
+        self.k_proj = QuantizeLinear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=config.attention_bias,w_bits=4,group_size=128,enable_groupwise=True)
+        self.v_proj = QuantizeLinear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=config.attention_bias,w_bits=4,group_size=128,enable_groupwise=True)
+        self.o_proj = QuantizeLinear(self.num_heads * self.head_dim, self.hidden_size, bias=config.attention_bias,w_bits=4,group_size=128,enable_groupwise=True)
         self._init_rope()
 
     def _init_rope(self):

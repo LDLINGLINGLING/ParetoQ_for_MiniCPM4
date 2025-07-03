@@ -1,15 +1,10 @@
-# Copyright (c) Meta Platforms, Inc. and affiliates.
-
-# This source code is licensed under the BSD-style license found in the
-# LICENSE file in the root directory of this source tree.
-
 import math
 import argparse
 import sys
 # 导入LLaMA模型配置类
 from models.configuration_minicpm import MiniCPMConfig
 # 导入量化版本的LLaMA模型
-
+from utils.safetrainer import SafeTrainer
 from transformers import AutoTokenizer, AutoModelForCausalLM, TrainingArguments
 import copy
 import torch
@@ -17,6 +12,7 @@ import transformers
 # 导入工具函数
 from utils import utils
 from utils import datautils
+from utils.init_param import check_nan_in_model, fix_nan_in_model,initialize_quantization_params
 
 # 导入参数处理函数
 from utils.process_args import process_args
@@ -26,6 +22,15 @@ from transformers import default_data_collator, Trainer
 # 获取日志记录器
 log = utils.get_logger("clm")
 
+def only_train_adapter(model, verbose=True):
+    for name, param in model.named_parameters():
+        if 'zero' in name.lower() or 'scale' in name.lower():
+            if verbose:
+                print(f"Train parameter: {name}")
+            param.requires_grad = True
+        else:
+            param.requires_grad = False
+    return model
 
 def setup_debug_args():
     """
@@ -41,12 +46,13 @@ def setup_debug_args():
     model_args.output_model_local_path = "D:\model_best\minicpm\pretrain_model\MiniCPM4-qatout"
     model_args.w_bits = 4  # 量化位数
     model_args.contain_weight_clip_val = False
+
     model_args.group_size = 128  # 分组量化大小
     model_args.enable_groupwise = True  # 启用分组量化
     
     # 数据参数
     data_args = Args()
-    data_args.train_data_local_path = r"D:\model_best\minicpm\ParetoQ_for_MiniCPM4\training_dataset_example.jsonl"  # 修改为你的训练数据路径
+    data_args.train_data_local_path = r"D:\model_best\minicpm\ParetoQ_for_MiniCPM4\train_text.jsonl"  # 修改为你的训练数据路径
     data_args.eval_data_local_path = r"D:\model_best\minicpm\ParetoQ_for_MiniCPM4\training_dataset_example.jsonl"   # 修改为你的验证数据路径
     
     # 训练参数
@@ -56,14 +62,15 @@ def setup_debug_args():
     training_args.model_max_length = 512
     training_args.do_train = True
     training_args.do_eval = True
+    training_args.max_grad_norm = 0.5 
     training_args.output_dir = "/root/autodl-tmp/output"
     training_args.logging_dir = "/root/autodl-tmp/logs"
-    training_args.per_device_train_batch_size = 1
+    training_args.per_device_train_batch_size = 2
     training_args.per_device_eval_batch_size = 1
     training_args.gradient_accumulation_steps = 8
     training_args.num_train_epochs = 3
     training_args.learning_rate = 5e-5
-    training_args.warmup_steps = 1
+    training_args.warmup_steps = 100
     training_args.logging_steps = 1
     training_args.save_steps = 500
     training_args.eval_steps = 500
@@ -78,141 +85,7 @@ def setup_debug_args():
     return model_args, data_args, training_args
 
 
-def fix_nan_in_model(model, verbose=True, inplace=True):
-    """
-    自动修复模型中包含NaN值的参数 - 仅修改NaN位置
-         
-    Args:
-        model: 要修复的PyTorch模型
-        verbose: 是否打印修复信息
-        inplace: 是否原地修改模型，如果False则返回修复后的新模型
-    
-    Returns:
-        model: 修复后的模型
-        fixed_params: 修复的参数数量
-        total_nan_count: 总共修复的NaN值数量
-    """
-    import torch
-    import copy
-    
-    # 如果不是原地修改，创建模型的深拷贝
-    if not inplace:
-        model = copy.deepcopy(model)
-    
-    fixed_params = 0
-    total_nan_count = 0
-         
-    for name, param in model.named_parameters():
-        if param.is_meta:
-            continue  # 跳过meta tensor
-                     
-        # 检查是否包含NaN
-        nan_mask = torch.isnan(param)
-        if not nan_mask.any():
-            continue  # 没有NaN则跳过
-        
-        # 统计NaN数量
-        nan_count = nan_mask.sum().item()
-        total_nan_count += nan_count
-                     
-        # 获取设备和数据类型信息
-        device = param.device
-        dtype = param.dtype
-        
-        # 根据参数名决定替换策略
-        with torch.no_grad():  # 确保不影响梯度计算
-            if 'scale' in name.lower():
-                # 整个scale参数矩阵替换为1
-                param.data = torch.ones_like(param, device=device, dtype=dtype)
-                if verbose:
-                    print(f"Fully reset [scale] param {name} -> all 1.0 (shape {param.shape})")
-                    
-            elif 'zero' in name.lower() or 'bias' in name.lower():
-                # 整个zero/bias参数矩阵替换为0
-                param.data = torch.zeros_like(param, device=device, dtype=dtype)
-                if verbose:
-                    print(f"Fully reset [zero/bias] param {name} -> all 0.0 (shape {param.shape})")
-                         
-            elif 'weight' in name.lower():
-                # weight参数的NaN位置用Xavier/Glorot初始化的值替换
-                fan_in = param.size(-1) if param.dim() > 1 else param.numel()
-                fan_out = param.size(0) if param.dim() > 1 else 1
-                std = (2.0 / (fan_in + fan_out)) ** 0.5
-                replacement_values = torch.randn_like(param, device=device, dtype=dtype) * std
-                param.data = torch.where(nan_mask, replacement_values, param.data)
-                if verbose:
-                    print(f"Fixed [weight] param {name}: {nan_count} NaN values -> Xavier init (shape {param.shape})")
-            
-            else:
-                # 其他参数的NaN位置用小的随机正态分布值替换
-                replacement_values = torch.randn_like(param, device=device, dtype=dtype) * 0.02
-                param.data = torch.where(nan_mask, replacement_values, param.data)
-                if verbose:
-                    print(f"Fixed param {name}: {nan_count} NaN values -> small random (shape {param.shape})")
-        
-        fixed_params += 1
 
-    if verbose:
-        print(f"\nSummary:")
-        print(f"- Fixed parameters: {fixed_params}")
-        print(f"- Total NaN values fixed: {total_nan_count}")
-        print(f"- Model modification: {'In-place' if inplace else 'New copy'}")
-        
-    return model, fixed_params, total_nan_count
-
-
-def check_nan_in_model(model, detailed=False):
-    """
-    检查模型中的NaN值
-    
-    Args:
-        model: PyTorch模型
-        detailed: 是否显示详细信息
-    
-    Returns:
-        has_nan: 是否包含NaN
-        nan_info: NaN信息字典
-    """
-    import torch
-    
-    nan_info = {}
-    total_nan_count = 0
-    
-    for name, param in model.named_parameters():
-        if param.is_meta:
-            continue
-            
-        nan_mask = torch.isnan(param)
-        if nan_mask.any():
-            nan_count = nan_mask.sum().item()
-            total_nan_count += nan_count
-            nan_info[name] = {
-                'count': nan_count,
-                'total_elements': param.numel(),
-                'percentage': (nan_count / param.numel()) * 100,
-                'shape': param.shape
-            }
-            
-            if detailed:
-                print(f"Parameter: {name}")
-                print(f"  - Shape: {param.shape}")
-                print(f"  - NaN count: {nan_count}/{param.numel()} ({nan_count/param.numel()*100:.2f}%)")
-                
-                # 显示NaN位置的示例（如果不是太多）
-                if nan_count <= 10:
-                    nan_indices = torch.nonzero(nan_mask)
-                    print(f"  - NaN positions: {nan_indices.tolist()}")
-                print()
-    
-    has_nan = total_nan_count > 0
-    
-    if detailed:
-        if has_nan:
-            print(f"Total NaN values found: {total_nan_count}")
-        else:
-            print("No NaN values found in the model.")
-    
-    return has_nan, nan_info
 def train():
     """
     主训练函数，负责模型训练和评估的完整流程
@@ -251,63 +124,11 @@ def train():
         device_map='cpu',        # 首先加载到CPU
         trust_remote_code=True,  # 信任远程代码
     )
-    has_nan, nan_info = check_nan_in_model(model, detailed=True)
-    if has_nan:
-        model, fixed_params, total_fixed = fix_nan_in_model(model, verbose=True, inplace=True)
-    # 如果模型不包含权重裁剪值，则初始化权重裁剪参数
-    if not model_args.contain_weight_clip_val:
-        for name, param in model.named_parameters():
-            if "weight_clip_val" in name:
-                # 获取对应的权重参数
-                weight_name = name.replace("weight_clip_val", "weight")
-                weight_param = dict(model.named_parameters()).get(weight_name, None)
-                
-                if weight_param is None:
-                    continue
-                
-                # 获取权重形状和分组参数
-                out_features, in_features = weight_param.shape
-                group_size = getattr(model_args, 'group_size', 128)  # 默认分组大小
-                num_groups = (in_features + group_size - 1) // group_size
-                
-                # 初始化缩放因子，形状为 [out_features, num_groups]
-                scale = torch.zeros(out_features, num_groups, 
-                                  dtype=weight_param.dtype, 
-                                  device=weight_param.device)
-                
-                # 按组计算缩放因子
-                for group_id in range(num_groups):
-                    start_col = group_id * group_size
-                    end_col = min(start_col + group_size, in_features)
-                    
-                    # 获取当前组的权重
-                    w_group = weight_param[:, start_col:end_col]
-                    
-                    # 根据量化位数计算缩放因子
-                    if model_args.w_bits == 1 or model_args.w_bits == 0:
-                        # 1位量化：使用当前组权重绝对值的均值
-                        group_scale = torch.mean(w_group.abs(), dim=-1, keepdim=False)
-                    elif model_args.w_bits == 2:
-                        # 2位量化：使用当前组权重绝对值的最大值
-                        group_scale = torch.max(w_group.abs(), dim=-1, keepdim=False)[0]
-                    elif model_args.w_bits == 3 or model_args.w_bits == 4:
-                        # 3-4位量化：计算量化范围内的缩放因子
-                        group_max = torch.max(w_group.abs(), dim=-1, keepdim=False)[0]
-                        maxq = 2 ** (model_args.w_bits - 1) - 1
-                        group_scale = group_max / maxq
-                    else:
-                        raise NotImplementedError(f"Unsupported quantization bits: {model_args.w_bits}")
-                    
-                    # 设置最小缩放因子，避免数值不稳定
-                    eps = 1e-5
-                    group_scale = torch.clamp(group_scale, min=eps)
-                    
-                    # 将缩放因子保存到对应位置
-                    scale[:, group_id] = group_scale
-                
-                # 将计算出的缩放因子复制到参数中
-                param.data.copy_(scale)
-
+    
+    #model = initialize_quantization_params(model)
+    model = fix_nan_in_model(model)[0]
+    model = only_train_adapter(model, verbose=True)  # 仅训练适配器参数
+    
     # 将模型移动到GPU
     model.cuda()
     log.info("Complete model loading...")
@@ -365,6 +186,7 @@ def train():
         greater_is_better=training_args.greater_is_better,
         remove_unused_columns=training_args.remove_unused_columns,
         dataloader_pin_memory=training_args.dataloader_pin_memory,
+        max_grad_norm=getattr(training_args, 'max_grad_norm', 1.0),
         report_to=[],  # Disable wandb/tensorboard reporting by default
     )
     
