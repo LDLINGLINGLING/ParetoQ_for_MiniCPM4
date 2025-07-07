@@ -1,6 +1,16 @@
 import torch
 import torch.nn as nn
 import re
+
+def only_train_adapter(model, verbose=True):
+    for name, param in model.named_parameters():
+        if 'zero' in name.lower() or 'scale' in name.lower():
+            if verbose:
+                print(f"Train parameter: {name}")
+            param.requires_grad = True
+        else:
+            param.requires_grad = False
+    return model
 def fix_nan_in_model(model, verbose=True, inplace=True):
     """
     自动修复模型中包含NaN值的参数 - 仅修改NaN位置

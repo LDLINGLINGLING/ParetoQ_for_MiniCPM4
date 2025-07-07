@@ -58,7 +58,7 @@ def setup_debug_args():
     training_args.do_eval = True
     training_args.output_dir = "/root/autodl-tmp/output"
     training_args.logging_dir = "/root/autodl-tmp/logs"
-    training_args.per_device_train_batch_size = 1
+    training_args.per_device_train_batch_size = 4
     training_args.per_device_eval_batch_size = 1
     training_args.gradient_accumulation_steps = 8
     training_args.num_train_epochs = 3
@@ -204,6 +204,7 @@ def train():
     # if has_nan:
     #     model, fixed_params, total_fixed = fix_nan_in_model(model, verbose=True, inplace=True)
     model = initialize_quantization_params(model,group_size=model_args.group_size)
+    model = only_train_adapter(model, verbose=True)
     # 将模型移动到GPU
     model.cuda()
     log.info("Complete model loading...")
