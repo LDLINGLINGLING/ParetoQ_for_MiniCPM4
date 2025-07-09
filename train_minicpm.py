@@ -41,7 +41,7 @@ def setup_debug_args():
     model_args.output_model_local_path = "D:\model_best\minicpm\pretrain_model\MiniCPM4-qatout"
     model_args.w_bits = 4  # 量化位数
     model_args.contain_weight_clip_val = False
-    model_args.group_size = 128  # 分组量化大小
+    model_args.group_size = 32  # 分组量化大小
     model_args.enable_groupwise = True  # 启用分组量化
     
     # 数据参数
@@ -58,12 +58,12 @@ def setup_debug_args():
     training_args.do_eval = True
     training_args.output_dir = "/root/autodl-tmp/output"
     training_args.logging_dir = "/root/autodl-tmp/logs"
-    training_args.per_device_train_batch_size = 4
+    training_args.per_device_train_batch_size = 1
     training_args.per_device_eval_batch_size = 1
     training_args.gradient_accumulation_steps = 8
     training_args.num_train_epochs = 3
-    training_args.learning_rate = 5e-4
-    training_args.warmup_steps = 100
+    training_args.learning_rate = 5e-5
+    training_args.warmup_steps = 0
     training_args.logging_steps = 1
     training_args.save_steps = 500
     training_args.eval_steps = 500
@@ -204,7 +204,7 @@ def train():
     # if has_nan:
     #     model, fixed_params, total_fixed = fix_nan_in_model(model, verbose=True, inplace=True)
     model = initialize_quantization_params(model,group_size=model_args.group_size)
-    model = only_train_adapter(model, verbose=True)
+    # model = only_train_adapter(model, verbose=True)
     # 将模型移动到GPU
     model.cuda()
     log.info("Complete model loading...")
@@ -263,7 +263,6 @@ def train():
         remove_unused_columns=training_args.remove_unused_columns,
         dataloader_pin_memory=training_args.dataloader_pin_memory,
         report_to=[],  # Disable wandb/tensorboard reporting by default
-        max_grad_norm=1.0
     )
     
     trainer = Trainer(
