@@ -364,582 +364,288 @@ def initialize_quantization_params(model, group_size=None):
         print(f"Grouped quantization parameters initialization completed! (group_size={group_size})")
     
     return model
-
-
-def initialize_quantization_params_gptq(model, calibration_data=None, group_size=128, bits=4, 
-                                        symmetric=True, blocksize=128, percdamp=0.01, 
-                                        actorder=False, static_groups=False, verbose=True):
+def load_gptq_weights_only(model_path=None, verbose=True):
     """
-    使用GPTQ算法初始化量化参数
+    只读取GPTQ权重，返回字典（层名->权重tensor）
+
+    Args:
+        model_path: 权重文件路径（.bin或.safetensors），为目录时自动查找权重文件
+        verbose: 是否打印详细信息
+
+    Returns:
+        weights_dict: {层名: 权重tensor}
+    """
+    import os
+    import torch
+
+    # 默认模型路径
+    if model_path is None:
+        model_path = r"D:\model_best\minicpm\pretrain_model\Qwen3-0___6B-GPTQ-Int8"
+
+    # 如果是目录，自动查找权重文件
+    if os.path.isdir(model_path):
+        # 优先找safetensors
+        files = os.listdir(model_path)
+        weight_file = None
+        for f in files:
+            if f.endswith('.safetensors'):
+                weight_file = os.path.join(model_path, f)
+                break
+        if weight_file is None:
+            for f in files:
+                if f.endswith('.bin') or f.endswith('.pt'):
+                    weight_file = os.path.join(model_path, f)
+                    break
+        if weight_file is None:
+            raise FileNotFoundError("未找到权重文件（.safetensors/.bin/.pt）")
+    else:
+        weight_file = model_path
+
+    if verbose:
+        print(f"Loading weights from: {weight_file}")
+
+    # 加载权重
+    if weight_file.endswith('.safetensors'):
+        try:
+            from safetensors import safe_open
+            weights_dict = {}
+            with safe_open(weight_file, framework="pt", device="cpu") as f:
+                for key in f.keys():
+                    weights_dict[key] = f.get_tensor(key)
+        except ImportError:
+            raise ImportError("pip install safetensors")
+    else:
+        weights_dict = torch.load(weight_file, map_location='cpu')
+        # 可能是state_dict或直接是权重字典
+        if "state_dict" in weights_dict:
+            weights_dict = weights_dict["state_dict"]
+
+    if verbose:
+        print(f"Loaded {len(weights_dict)} tensors.")
+
+    return weights_dict
+
+def initialize_from_gptq_model(model, gptq_weights, verbose=True):
+    """
+    从GPTQ权重中提取scale和zero参数，初始化QAT模型的量化参数
     
     Args:
-        model: PyTorch模型
-        calibration_data: 校准数据，格式为[(input, output), ...] 或 DataLoader
-        group_size: 分组大小，-1表示不分组
-        bits: 量化位数
-        symmetric: 是否使用对称量化（注意：真正的GPTQ通常使用非对称量化）
-        blocksize: GPTQ算法的块大小
-        percdamp: 阻尼系数百分比
-        actorder: 是否使用激活顺序
-        static_groups: 是否使用静态分组
+        model: 目标QAT模型
+        gptq_weights: GPTQ权重字典
         verbose: 是否打印详细信息
         
     Returns:
-        model: 量化参数初始化后的模型
+        model: 初始化后的模型
     """
-    try:
-        # 尝试导入GPTQ相关模块
-        import sys
-        import os
+    import torch
+    import numpy as np
+    
+    def unpack_gptq_zeros(qzeros, bits, group_size, outfeatures):
+        """解包GPTQ的qzeros到原始zeros"""
+        # qzeros shape: [num_groups, outfeatures // 32 * bits]
+        # 需要解包成: [num_groups, outfeatures]
         
-        # 添加AutoGPTQ路径到系统路径
-        autogptq_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "AutoGPTQ")
-        if autogptq_path not in sys.path:
-            sys.path.append(autogptq_path)
-            
-        from auto_gptq.quantization.gptq import GPTQ
-        from auto_gptq.quantization.quantizer import Quantizer
+        zeros = torch.zeros((qzeros.shape[0], outfeatures), dtype=torch.float32)
         
-    except ImportError as e:
-        if verbose:
-            print(f"Warning: Cannot import GPTQ modules: {e}")
-            print("Falling back to simple linear quantization...")
-        return initialize_quantization_params_gptq_style(
-            model, group_size=group_size, bits=bits, symmetric=symmetric, verbose=verbose
-        )
-    
-    if calibration_data is None:
-        if verbose:
-            print("Warning: No calibration data provided. GPTQ requires calibration data.")
-            print("Falling back to weight-based initialization...")
-        return initialize_quantization_params_gptq_style(
-            model, group_size=group_size, bits=bits, symmetric=symmetric, verbose=verbose
-        )
-    
-    # 收集需要量化的层
-    quantizable_layers = []
-    layer_names = []
-    
-    for name, module in model.named_modules():
-        # 检查是否是可量化的层（Linear层）
-        if isinstance(module, torch.nn.Linear):
-            # 检查是否有对应的量化参数
-            scale_param_name = f"{name}.scale"
-            has_scale = any(scale_param_name in param_name for param_name, _ in model.named_parameters())
+        if bits in [2, 4, 8]:
+            # 对于2,4,8位量化，复制qlinear_cuda.py中的解包逻辑
+            wf = torch.tensor(list(range(0, 32, bits)), dtype=torch.int32)
             
-            if has_scale:
-                quantizable_layers.append(module)
-                layer_names.append(name)
-    
-    if verbose:
-        print(f"Found {len(quantizable_layers)} quantizable layers")
-        print(f"GPTQ config: bits={bits}, group_size={group_size}, blocksize={blocksize}")
-    
-    # 为每个层运行GPTQ算法
-    initialized_count = 0
-    
-    for layer_idx, (layer, layer_name) in enumerate(zip(quantizable_layers, layer_names)):
-        if verbose:
-            print(f"Processing layer {layer_idx+1}/{len(quantizable_layers)}: {layer_name}")
+            # 解包过程（完全按照qlinear_cuda.py的forward方法）
+            unpacked = torch.bitwise_right_shift(
+                torch.unsqueeze(qzeros, 2).expand(-1, -1, 32 // bits),
+                wf.unsqueeze(0).unsqueeze(0)
+            ).to(torch.int16 if bits == 8 else torch.int8)
+            unpacked = torch.bitwise_and(unpacked, (2**bits) - 1)
+            
+            # 重塑为目标形状
+            unpacked = unpacked.reshape(qzeros.shape[0], -1)
+            
+            # 确保不超出outfeatures维度
+            copy_cols = min(unpacked.shape[1], outfeatures)
+            zeros[:, :copy_cols] = unpacked[:, :copy_cols].float()
+            
+        elif bits == 3:
+            # 3位量化的特殊处理（按照qlinear_cuda.py的逻辑）
+            # 重塑qzeros为3D形状处理
+            qzeros_reshaped = qzeros.reshape(qzeros.shape[0], qzeros.shape[1] // 3, 3, 1).expand(-1, -1, -1, 12)
+            
+            # 定义wf用于3位解包
+            wf = torch.tensor([
+                [0, 3, 6, 9, 12, 15, 18, 21, 24, 27, 30, 0],
+                [0, 1, 4, 7, 10, 13, 16, 19, 22, 25, 28, 31], 
+                [0, 2, 5, 8, 11, 14, 17, 20, 23, 26, 29, 0],
+            ], dtype=torch.int32).reshape(1, 3, 12)
+            
+            # 解包过程
+            unpacked = qzeros_reshaped >> wf.unsqueeze(0)
+            unpacked[:, :, 0, 10] = (unpacked[:, :, 0, 10] & 0x3) | ((unpacked[:, :, 1, 0] << 2) & 0x4)
+            unpacked[:, :, 1, 11] = (unpacked[:, :, 1, 11] & 0x1) | ((unpacked[:, :, 2, 0] << 1) & 0x6)
+            unpacked = unpacked & 0x7
+            
+            # 拼接结果
+            unpacked = torch.cat([
+                unpacked[:, :, 0, :11], 
+                unpacked[:, :, 1, 1:12], 
+                unpacked[:, :, 2, 1:11]
+            ], dim=2)
+            
+            # 重塑为最终形状
+            unpacked = unpacked.reshape(qzeros.shape[0], -1)
+            copy_cols = min(unpacked.shape[1], outfeatures)
+            zeros[:, :copy_cols] = unpacked[:, :copy_cols].float()
         
-        try:
-            # 创建GPTQ实例
-            gptq = GPTQ(layer)
-            
-            # 配置量化器
-            gptq.quantizer.configure(
-                bits=bits,
-                perchannel=True,  # 使用per-channel量化
-                sym=symmetric,
-                mse=False,
-                norm=2.4,
-                grid=100,
-                maxshrink=0.8,
-                trits=False
-            )
-            
-            # 如果有校准数据，使用它来计算Hessian矩阵
-            if calibration_data is not None:
-                # 收集该层的输入输出数据
-                num_samples = min(32, len(calibration_data)) if isinstance(calibration_data, (list, tuple)) else 32
-                
-                for i in range(num_samples):
-                    # 生成或获取校准数据
-                    if isinstance(calibration_data, (list, tuple)) and len(calibration_data) > i:
-                        # 使用提供的校准数据
-                        input_data = calibration_data[i][0] if isinstance(calibration_data[i], (list, tuple)) else calibration_data[i]
-                    else:
-                        # 生成随机输入数据（在实际使用中应该是真实的激活数据）
-                        input_dim = layer.in_features
-                        batch_size = 8
-                        input_data = torch.randn(batch_size, input_dim, device=layer.weight.device, dtype=layer.weight.dtype)
-                    
-                    # 确保输入数据的形状正确
-                    if input_data.dim() == 2:
-                        input_data = input_data.unsqueeze(0)
-                    
-                    # 计算输出并添加到GPTQ
-                    with torch.no_grad():
-                        output_data = layer(input_data.view(-1, input_data.size(-1)))
-                        gptq.add_batch(input_data.view(-1, input_data.size(-1)), output_data)
+        # 重要：加1恢复原始零点值（因为GPTQ在pack时减了1）
+        zeros = zeros + 1
+        return zeros
+    
+    def get_bits_from_weight_shape(qweight_shape, weight_shape):
+        """从qweight形状推断量化位数"""
+        # qweight shape: [infeatures // 32 * bits, outfeatures]
+        # weight shape: [outfeatures, infeatures] 
+        infeatures = weight_shape[1]
+        qweight_rows = qweight_shape[0]
+        
+        # 计算bits: qweight_rows = infeatures // 32 * bits
+        # 所以 bits = qweight_rows * 32 / infeatures
+        bits = int(qweight_rows * 32 / infeatures)
+        return bits
+    
+    def calculate_group_size(gptq_scales, gptq_weight):
+        """计算GPTQ模型中实际使用的分组大小"""
+        # gptq_scales shape: [num_groups, outfeatures]
+        # gptq_weight shape: [outfeatures, infeatures]
+        num_groups = gptq_scales.shape[0]
+        infeatures = gptq_weight.shape[1]
+        
+        # 分组大小 = infeatures / num_groups
+        group_size = infeatures // num_groups
+        
+        if verbose:
+            print(f"  - Detected group_size: {group_size} (infeatures: {infeatures}, num_groups: {num_groups})")
+        
+        return group_size
+    
+    initialized_layers = 0
+    
+    # 遍历模型中的所有参数
+    for name, param in model.named_parameters():
+        if '.scale' in name or '.zero' in name:
+            # 获取基础层名
+            if '.scale' in name:
+                base_name = name.replace('.scale', '')
+                param_type = 'scale'
             else:
-                # 如果没有校准数据，使用随机数据
-                input_dim = layer.in_features
-                batch_size = 8
-                num_samples = 16
-                
-                for _ in range(num_samples):
-                    fake_input = torch.randn(batch_size, input_dim, device=layer.weight.device, dtype=layer.weight.dtype)
-                    with torch.no_grad():
-                        fake_output = layer(fake_input)
-                        gptq.add_batch(fake_input, fake_output)
+                base_name = name.replace('.zero', '')
+                param_type = 'zero'
             
-            # 运行GPTQ量化
-            # 注意：group_size 在 GPTQ 中 -1 表示不分组
-            gptq_group_size = -1 if group_size is None else group_size
+            # 在GPTQ权重中查找对应的参数
+            gptq_scales_key = base_name + '.scales'
+            gptq_qzeros_key = base_name + '.qzeros'
+            gptq_qweight_key = base_name + '.qweight'
+            gptq_weight_key = base_name + '.weight'
             
-            scale, zero, g_idx = gptq.fasterquant(
-                blocksize=blocksize,
-                percdamp=percdamp,
-                group_size=gptq_group_size,
-                actorder=actorder,
-                static_groups=static_groups
-            )
-            
-            # 将计算得到的量化参数应用到模型
-            scale_param_name = f"{layer_name}.scale"
-            zero_param_name = f"{layer_name}.zero"
-            
-            # 查找并更新scale参数
-            for param_name, param in model.named_parameters():
-                if param_name == scale_param_name:
-                    with torch.no_grad():
-                        if scale.shape == param.shape:
-                            param.data.copy_(scale)
-                        else:
-                            # 形状不匹配时的处理
+            if gptq_scales_key in gptq_weights and gptq_qzeros_key in gptq_weights:
+                with torch.no_grad():
+                    gptq_scales = gptq_weights[gptq_scales_key]
+                    gptq_qzeros = gptq_weights[gptq_qzeros_key] 
+                    
+                    # 获取weight信息用于计算分组
+                    if gptq_weight_key in gptq_weights:
+                        gptq_weight = gptq_weights[gptq_weight_key]
+                        group_size = calculate_group_size(gptq_scales, gptq_weight)
+                    else:
+                        # 从scales形状推断
+                        group_size = 128  # 默认值
+                        if verbose:
+                            print(f"⚠ Cannot find weight for {base_name}, using default group_size={group_size}")
+                    
+                    if param_type == 'scale':
+                        # 直接使用GPTQ的scales
+                        # gptq_scales shape: [num_groups, outfeatures]
+                        # 需要转置到 [outfeatures, num_groups]
+                        target_scales = gptq_scales.t().contiguous()
+                        
+                        # 确保数据类型匹配
+                        target_scales = target_scales.to(param.dtype)
+                        
+                        # 检查形状是否匹配
+                        if target_scales.shape == param.shape:
+                            param.data.copy_(target_scales)
                             if verbose:
-                                print(f"Warning: Scale shape mismatch for {layer_name}. "
-                                      f"Expected {param.shape}, got {scale.shape}")
-                            
-                            # 尝试调整形状
-                            if param.numel() == scale.numel():
-                                param.data.copy_(scale.view_as(param))
-                            elif scale.numel() >= param.numel():
-                                param.data.copy_(scale.flatten()[:param.numel()].view_as(param))
+                                print(f"✓ Initialized {name} from GPTQ scales, shape: {param.shape}")
+                        else:
+                            if verbose:
+                                print(f"⚠ Shape mismatch for {name}: target {param.shape} vs GPTQ {target_scales.shape}")
+                            # 尝试重塑或裁剪
+                            if target_scales.numel() >= param.numel():
+                                param.data.copy_(target_scales.flatten()[:param.numel()].view_as(param.data))
                             else:
                                 # 重复填充
-                                repeat_times = (param.numel() + scale.numel() - 1) // scale.numel()
-                                repeated_scale = scale.repeat(repeat_times)
-                                param.data.copy_(repeated_scale[:param.numel()].view_as(param))
-                    break
-            
-            # 查找并更新zero参数（如果存在）
-            if not symmetric:
-                for param_name, param in model.named_parameters():
-                    if param_name == zero_param_name:
-                        with torch.no_grad():
-                            if zero.shape == param.shape:
-                                param.data.copy_(zero)
+                                repeated = target_scales.flatten().repeat(param.numel() // target_scales.numel() + 1)
+                                param.data.copy_(repeated[:param.numel()].view_as(param.data))
+                            if verbose:
+                                print(f"✓ Reshaped and initialized {name}")
+                    
+                    elif param_type == 'zero':
+                        # 需要解包qzeros
+                        # 首先确定量化位数
+                        if gptq_qweight_key in gptq_weights:
+                            gptq_qweight = gptq_weights[gptq_qweight_key]
+                            if gptq_weight_key in gptq_weights:
+                                bits = get_bits_from_weight_shape(gptq_qweight.shape, gptq_weight.shape)
                             else:
-                                # 形状不匹配时的处理
+                                # 从qzeros形状推断bits
+                                # qzeros shape: [num_groups, outfeatures // 32 * bits]
+                                # outfeatures 从 scales 获取
+                                outfeatures = gptq_scales.shape[1]
+                                expected_cols = outfeatures // 32  # 假设至少4位
+                                actual_cols = gptq_qzeros.shape[1]
+                                bits = int(actual_cols * 32 / outfeatures)
                                 if verbose:
-                                    print(f"Warning: Zero shape mismatch for {layer_name}. "
-                                          f"Expected {param.shape}, got {zero.shape}")
-                                
-                                # 尝试调整形状
-                                if param.numel() == zero.numel():
-                                    param.data.copy_(zero.view_as(param))
-                                elif zero.numel() >= param.numel():
-                                    param.data.copy_(zero.flatten()[:param.numel()].view_as(param))
-                                else:
-                                    # 重复填充
-                                    repeat_times = (param.numel() + zero.numel() - 1) // zero.numel()
-                                    repeated_zero = zero.repeat(repeat_times)
-                                    param.data.copy_(repeated_zero[:param.numel()].view_as(param))
-                        break
-            
-            # 清理GPTQ实例以释放内存
-            gptq.free()
-            initialized_count += 1
-            
-            if verbose:
-                print(f"Successfully quantized layer: {layer_name}")
-                
-        except Exception as e:
-            if verbose:
-                print(f"Error quantizing layer {layer_name}: {e}")
-            continue
+                                    print(f"  - Inferred bits from qzeros shape: {bits}")
+                        else:
+                            # 默认使用4位
+                            bits = 4
+                            if verbose:
+                                print(f"⚠ Cannot determine bits for {name}, using default 4-bit")
+                        
+                        # 解包zeros
+                        outfeatures = gptq_scales.shape[1]  # scales shape: [num_groups, outfeatures]
+                        
+                        unpacked_zeros = unpack_gptq_zeros(gptq_qzeros, bits, group_size, outfeatures)
+                        
+                        # 转置到目标形状 [outfeatures, num_groups]
+                        target_zeros = unpacked_zeros.t().contiguous()
+                        
+                        # 确保数据类型匹配
+                        target_zeros = target_zeros.to(param.dtype)
+                        
+                        # 检查形状是否匹配
+                        if target_zeros.shape == param.shape:
+                            param.data.copy_(target_zeros)
+                            if verbose:
+                                print(f"✓ Initialized {name} from GPTQ qzeros, shape: {param.shape}")
+                        else:
+                            if verbose:
+                                print(f"⚠ Shape mismatch for {name}: target {param.shape} vs GPTQ {target_zeros.shape}")
+                            # 尝试重塑或裁剪
+                            if target_zeros.numel() >= param.numel():
+                                param.data.copy_(target_zeros.flatten()[:param.numel()].view_as(param.data))
+                            else:
+                                # 重复填充
+                                repeated = target_zeros.flatten().repeat(param.numel() // target_zeros.numel() + 1)
+                                param.data.copy_(repeated[:param.numel()].view_as(param.data))
+                            if verbose:
+                                print(f"✓ Reshaped and initialized {name}")
+                    
+                    initialized_layers += 1
     
     if verbose:
-        print(f"Successfully initialized {initialized_count}/{len(quantizable_layers)} layers using GPTQ")
-        print("GPTQ quantization parameters initialization completed!")
+        print(f"\n=== GPTQ Initialization Summary ===")
+        print(f"✓ Initialized {initialized_layers} quantization parameters from GPTQ weights")
+        print(f"✓ All scale and zero parameters have been updated")
     
     return model
 
 
-def initialize_quantization_params_gptq_style(
-    model, 
-    group_size=None, 
-    bits=8, 
-    symmetric=False, 
-    verbose=True
-):
-    """
-    使用线性量化方法初始化量化参数（GPTQ-style，但不使用Hessian）
-    
-    Args:
-        model: 要量化的PyTorch模型
-        group_size: 分组大小，如果为None则使用全局量化
-        bits: 量化位数
-        symmetric: 是否使用对称量化
-        verbose: 是否打印详细信息
-        
-    Returns:
-        model: 量化参数初始化后的模型
-    """
-    if verbose:
-        print("Initializing quantization parameters using linear quantization (GPTQ-style)...")
-    
-    # 使用已有的 initialize_quantization_params 函数
-    return initialize_quantization_params(model, group_size=group_size)
-
-def create_calibration_data_from_model_weights(model, num_samples=32, batch_size=8):
-    """
-    从模型权重创建校准数据的简化版本
-    注意：这不是理想的校准数据，理想情况下应该使用真实的数据集
-    
-    Args:
-        model: PyTorch模型
-        num_samples: 样本数量
-        batch_size: 批大小
-        
-    Returns:
-        list: 校准数据列表
-    """
-    calibration_data = []
-    
-    # 寻找第一个Linear层来确定输入维度
-    first_linear = None
-    for module in model.modules():
-        if isinstance(module, torch.nn.Linear):
-            first_linear = module
-            break
-    
-    if first_linear is None:
-        return []
-    
-    input_dim = first_linear.in_features
-    device = first_linear.weight.device
-    dtype = first_linear.weight.dtype
-    
-    for _ in range(num_samples):
-        # 生成随机输入数据
-        fake_input = torch.randn(batch_size, input_dim, device=device, dtype=dtype)
-        # 注意：在实际使用中，这里应该是真实的输入-输出对
-        calibration_data.append((fake_input, None))
-    
-    return calibration_data
-
-
-def create_calibration_data_from_real_data(model, tokenizer, texts, max_length=512, batch_size=8):
-    """
-    从真实文本数据创建校准数据
-    
-    Args:
-        model: PyTorch模型
-        tokenizer: 分词器
-        texts: 文本数据列表
-        max_length: 最大长度
-        batch_size: 批大小
-        
-    Returns:
-        list: 校准数据列表
-    """
-    calibration_data = []
-    device = next(model.parameters()).device
-    
-    # 准备数据
-    for i in range(0, len(texts), batch_size):
-        batch_texts = texts[i:i+batch_size]
-        
-        # 编码文本
-        if tokenizer is not None:
-            encoded = tokenizer(
-                batch_texts,
-                max_length=max_length,
-                padding=True,
-                truncation=True,
-                return_tensors="pt"
-            )
-            
-            input_ids = encoded["input_ids"].to(device)
-            attention_mask = encoded.get("attention_mask", None)
-            if attention_mask is not None:
-                attention_mask = attention_mask.to(device)
-            
-            calibration_data.append((input_ids, attention_mask))
-        else:
-            # 如果没有 tokenizer，使用随机数据
-            seq_len = min(max_length, 128)
-            vocab_size = 32000  # 假设词汇表大小
-            input_ids = torch.randint(0, vocab_size, (len(batch_texts), seq_len), device=device)
-            calibration_data.append((input_ids, None))
-    
-    return calibration_data
-
-
-def collect_layer_activations(model, calibration_data, layer_name):
-    """
-    收集指定层的激活数据
-    
-    Args:
-        model: PyTorch模型
-        calibration_data: 校准数据
-        layer_name: 层名称
-        
-    Returns:
-        list: 激活数据列表 [(input, output), ...]
-    """
-    activations = []
-    
-    # 注册前向钩子
-    def hook_fn(module, input, output):
-        # 保存输入和输出
-        if isinstance(input, tuple):
-            inp = input[0].detach().clone()
-        else:
-            inp = input.detach().clone()
-        
-        if isinstance(output, tuple):
-            out = output[0].detach().clone()
-        else:
-            out = output.detach().clone()
-        
-        activations.append((inp, out))
-    
-    # 找到目标层并注册钩子
-    target_layer = None
-    for name, module in model.named_modules():
-        if name == layer_name:
-            target_layer = module
-            break
-    
-    if target_layer is None:
-        return []
-    
-    hook = target_layer.register_forward_hook(hook_fn)
-    
-    try:
-        # 运行前向传播
-        model.eval()
-        with torch.no_grad():
-            for data_batch in calibration_data:
-                if isinstance(data_batch, (list, tuple)) and len(data_batch) >= 2:
-                    input_ids, attention_mask = data_batch[0], data_batch[1]
-                    if attention_mask is not None:
-                        _ = model(input_ids, attention_mask=attention_mask)
-                    else:
-                        _ = model(input_ids)
-                else:
-                    input_data = data_batch[0] if isinstance(data_batch, (list, tuple)) else data_batch
-                    _ = model(input_data)
-    finally:
-        # 移除钩子
-        hook.remove()
-    
-    return activations
-
-# ...existing code...
-
-
-# 使用示例
-if __name__ == "__main__":
-    # 创建一个示例模型用于测试
-    class TestModel(nn.Module):
-        def __init__(self):
-            super().__init__()
-            self.layer1 = nn.Linear(128, 64)
-            # 模拟分组量化参数 (假设分组大小为32，则需要128/32=4个scale和zero)
-            self.layer1.scale = nn.Parameter(torch.ones(64, 4))  # [out_features, num_groups]
-            self.layer1.zero = nn.Parameter(torch.zeros(64, 4))
-            
-            self.layer2 = nn.Linear(64, 32)
-            # 只有scale，没有zero（对称量化）
-            self.layer2.scale = nn.Parameter(torch.ones(32, 2))  # 64/32=2个scale
-    
-        def forward(self, x):
-            return self.layer2(self.layer1(x))
-    
-    print("="*60)
-    print("Testing GPTQ-style initialization")
-    print("="*60)
-    
-    # 测试非对称分组量化
-    print("\n1. Testing asymmetric grouped quantization:")
-    model1 = TestModel()
-    print("Before initialization:")
-    print(f"layer1.scale shape: {model1.layer1.scale.shape}, mean: {model1.layer1.scale.data.mean():.4f}")
-    print(f"layer1.zero shape: {model1.layer1.zero.shape}, mean: {model1.layer1.zero.data.mean():.4f}")
-    
-    model1 = initialize_quantization_params_gptq_style(
-        model1, group_size=32, bits=4, symmetric=False, verbose=True
-    )
-    
-    print("\nAfter asymmetric initialization:")
-    print(f"layer1.scale: mean={model1.layer1.scale.data.mean():.4f}, std={model1.layer1.scale.data.std():.4f}")
-    print(f"layer1.zero: mean={model1.layer1.zero.data.mean():.4f}, std={model1.layer1.zero.data.std():.4f}")
-    
-    # 测试对称分组量化
-    print("\n2. Testing symmetric grouped quantization:")
-    model2 = TestModel()
-    # 移除zero参数进行对称量化测试
-    del model2.layer1.zero
-    
-    model2 = initialize_quantization_params_gptq_style(
-        model2, group_size=32, bits=4, symmetric=True, verbose=True
-    )
-    
-    print("\nAfter symmetric initialization:")
-    print(f"layer1.scale: mean={model2.layer1.scale.data.mean():.4f}, std={model2.layer1.scale.data.std():.4f}")
-    print(f"layer2.scale: mean={model2.layer2.scale.data.mean():.4f}, std={model2.layer2.scale.data.std():.4f}")
-    
-    # 测试全局量化
-    print("\n3. Testing global quantization:")
-    model3 = TestModel()
-    # 调整为全局量化的参数形状
-    model3.layer1.scale = nn.Parameter(torch.ones(64, 1))
-    model3.layer1.zero = nn.Parameter(torch.zeros(64, 1))
-    model3.layer2.scale = nn.Parameter(torch.ones(32, 1))
-    
-    model3 = initialize_quantization_params_gptq_style(
-        model3, group_size=-1, bits=4, symmetric=False, verbose=True
-    )
-    
-    print("\nAfter global initialization:")
-    print(f"layer1.scale: mean={model3.layer1.scale.data.mean():.4f}, std={model3.layer1.scale.data.std():.4f}")
-    print(f"layer1.zero: mean={model3.layer1.zero.data.mean():.4f}, std={model3.layer1.zero.data.std():.4f}")
-    
-    print("\n" + "="*60)
-    print("Testing original initialization")
-    print("="*60)
-    
-    # 测试原有函数进行对比
-    print("\n4. Testing original grouped quantization:")
-    model4 = TestModel()
-    model4 = initialize_quantization_params(model4, group_size=32)
-    
-    print("\nAfter original initialization:")
-    print(f"layer1.scale: mean={model4.layer1.scale.data.mean():.4f}, std={model4.layer1.scale.data.std():.4f}")
-    print(f"layer1.zero: mean={model4.layer1.zero.data.mean():.4f}, std={model4.layer1.zero.data.std():.4f}")
-    
-    # 使用 GPTQ 量化的完整示例
-    print("\n" + "="*60)
-    print("Testing GPTQ Quantization with Real Data")
-    print("="*60)
-    
-    # 测试真实的 GPTQ 量化初始化
-    print("\n5. Testing GPTQ quantization with calibration data:")
-    
-    try:
-        # 创建测试模型
-        model5 = TestModel()
-        
-        # 创建校准数据
-        calibration_data = create_calibration_data_from_model_weights(model5, num_samples=16, batch_size=4)
-        
-        # 使用 GPTQ 量化初始化
-        model5 = initialize_quantization_params_gptq(
-            model5, 
-            calibration_data=calibration_data,
-            group_size=32, 
-            bits=4, 
-            symmetric=False,
-            blocksize=128,
-            percdamp=0.01,
-            verbose=True
-        )
-        
-        print("\nAfter GPTQ initialization:")
-        print(f"layer1.scale: mean={model5.layer1.scale.data.mean():.4f}, std={model5.layer1.scale.data.std():.4f}")
-        print(f"layer1.zero: mean={model5.layer1.zero.data.mean():.4f}, std={model5.layer1.zero.data.std():.4f}")
-        
-    except Exception as e:
-        print(f"GPTQ initialization failed: {e}")
-        print("This is expected if AutoGPTQ is not properly installed.")
-    
-    # 测试 NaN 检测和修复
-    print("\n6. Testing NaN detection and repair:")
-    
-    model6 = TestModel()
-    # 人工引入 NaN 值
-    model6.layer1.scale.data[0, 0] = float('nan')
-    model6.layer1.zero.data[0, 0] = float('nan')
-    
-    has_nan, nan_info = check_nan_in_model(model6, detailed=True)
-    print(f"Has NaN: {has_nan}")
-    
-    if has_nan:
-        print("Fixing NaN values...")
-        model6, fixed_params, total_nan_count = fix_nan_in_model(model6, verbose=True)
-        print(f"Fixed {total_nan_count} NaN values in {fixed_params} parameters")
-    
-    print("\n" + "="*60)
-    print("Usage Guide")
-    print("="*60)
-    
-    print("""
-使用指南：
-
-1. 基本线性量化初始化：
-   model = initialize_quantization_params(model, group_size=128)
-
-2. GPTQ-style 线性量化初始化：
-   model = initialize_quantization_params_gptq_style(
-       model, group_size=128, bits=4, symmetric=False, verbose=True
-   )
-
-3. 真实 GPTQ 量化初始化：
-   # 准备校准数据
-   calibration_data = create_calibration_data_from_real_data(
-       model, tokenizer, texts, max_length=512, batch_size=8
-   )
-   
-   # 或者使用简化版本
-   calibration_data = create_calibration_data_from_model_weights(
-       model, num_samples=32, batch_size=8
-   )
-   
-   # 应用 GPTQ 量化
-   model = initialize_quantization_params_gptq(
-       model, 
-       calibration_data=calibration_data,
-       group_size=128, 
-       bits=4, 
-       symmetric=False,
-       blocksize=128,
-       percdamp=0.01,
-       actorder=False,
-       static_groups=False,
-       verbose=True
-   )
-
-4. 检查和修复 NaN 值：
-   has_nan, nan_info = check_nan_in_model(model, detailed=True)
-   if has_nan:
-       model, fixed_params, total_nan_count = fix_nan_in_model(model, verbose=True)
-
-5. 设置仅量化参数可训练：
-   model = only_train_adapter(model, verbose=True)
-
-注意事项：
-- 对于真实的 GPTQ 量化，需要安装 AutoGPTQ 库
-- 校准数据应该是真实的输入数据，而不是随机数据
-- group_size 控制分组量化的组大小，None 或 -1 表示全局量化
-- symmetric=True 时只会初始化 scale 参数，symmetric=False 时会初始化 scale 和 zero 参数
-- GPTQ 量化会自动 fallback 到线性量化如果 AutoGPTQ 不可用或没有校准数据
-""")
-
-    print("\n" + "="*60)
-    print("All tests completed!")
-    print("="*60)
