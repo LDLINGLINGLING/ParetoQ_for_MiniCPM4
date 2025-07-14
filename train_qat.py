@@ -57,6 +57,7 @@ def setup_debug_args():
     model_args.only_train_adapter = os.environ.get("MODEL_ONLY_TRAIN_ADAPTER", "True") == "True"
     model_args.use_origin_model = os.environ.get("MODEL_USE_ORIGIN_MODEL", "True") == "True"
     model_args.entropy_loss_weight = float(os.environ.get("MODEL_ENTROPY_LOSS_WEIGHT", 0.1))
+    model_args.lm_loss_weight = float(os.environ.get("MODEL_LM_LOSS_WEIGHT", 1.0))
 
     # 配置数据相关参数
     data_args = Args()
@@ -261,6 +262,7 @@ def train():
             model=model,
             origin_model=origin_model,
             entropy_loss_weight=getattr(model_args, 'entropy_loss_weight', 0.1),
+            lm_loss_weight=getattr(model_args, 'lm_loss_weight', 1.0),
             processing_class=tokenizer,
             args=hf_training_args,
             train_dataset=train_data if training_args.do_train else None,

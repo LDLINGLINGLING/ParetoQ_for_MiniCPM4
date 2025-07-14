@@ -36,6 +36,7 @@ export MODEL_LEARNING_RATE=5e-6
 export MODEL_WARMUP_STEPS=100
 export MODEL_SAVE_STEPS=500
 export MODEL_EVAL_STEPS=500
+export MODEL_LM_LOSS_WEIGHT=1.0
 
 # =========================
 # 启动训练

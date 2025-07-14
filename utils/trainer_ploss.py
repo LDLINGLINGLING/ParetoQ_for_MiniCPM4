@@ -8,18 +8,20 @@ class CustomTrainerWithEntropyLoss(Trainer):
     当使用origin_model时，会计算QAT模型和原始模型输出的熵差异作为辅助损失
     """
     
-    def __init__(self, origin_model=None, entropy_loss_weight=0.1, **kwargs):
+    def __init__(self, origin_model=None, entropy_loss_weight=0.1, lm_loss_weight=1.0, **kwargs):
         """
         初始化自定义训练器
         
         Args:
             origin_model: 原始模型（用于计算熵损失）
             entropy_loss_weight: 熵损失的权重
+            lm_loss_weight: 语言模型损失的权重
             **kwargs: 其他传递给父类的参数
         """
         super().__init__(**kwargs)
         self.origin_model = origin_model
         self.entropy_loss_weight = entropy_loss_weight
+        self.lm_loss_weight = lm_loss_weight
         self.last_logged_step = -1
         # 如果有原始模型，将其设置为评估模式并冻结参数
         if self.origin_model is not None:
@@ -65,10 +67,9 @@ class CustomTrainerWithEntropyLoss(Trainer):
             return_outputs: 是否返回模型输出
             
         Returns:
-            loss: 总损失（原始损失 + 熵损失）
+            loss: 总损失（加权语言模型损失 + 熵损失）
             outputs: 模型输出（如果return_outputs=True）
         """
-        # 获取标签
         # 获取标签
         labels = inputs.get("labels")
         
@@ -96,19 +97,38 @@ class CustomTrainerWithEntropyLoss(Trainer):
             # 计算熵损失
             entropy_loss = self.compute_entropy_loss(qat_logits, origin_logits)
             
-            # 总损失 = 语言模型损失 + 加权熵损失
-            total_loss = lm_loss + self.entropy_loss_weight * entropy_loss
+            # 总损失 = 加权语言模型损失 + 加权熵损失
+            total_loss = self.lm_loss_weight * lm_loss + self.entropy_loss_weight * entropy_loss
             
-            # 记录各组成部分的损失（用于监控）
-            if self.state.global_step != self.last_logged_step and self.state.global_step % self.args.logging_steps == 0 and self.state.is_world_process_zero:
-                self.log({
-                    "train_lm_loss": lm_loss.item(),
-                    "train_entropy_loss": entropy_loss.item(),
-                    "train_total_loss": total_loss.item(),
-                    "entropy_loss_weight": self.entropy_loss_weight
-                })
-            self.last_logged_step = self.state.global_step
+            # 存储损失组件供日志记录使用（避免重复打印）
+            self._current_lm_loss = lm_loss.item()
+            self._current_entropy_loss = entropy_loss.item()
+            self._current_total_loss = total_loss.item()
         else:
-            total_loss = lm_loss
+            total_loss = self.lm_loss_weight * lm_loss
+            self._current_lm_loss = lm_loss.item()
+            self._current_entropy_loss = 0.0
+            self._current_total_loss = total_loss.item()
         
-        return (total_loss, outputs) if return_outputs else total_loss 
+        return (total_loss, outputs) if return_outputs else total_loss
+    
+    def log(self, logs, start_time=None, **kwargs):
+        """
+        重写日志记录方法，添加自定义损失组件
+        
+        Args:
+            logs: 日志字典
+            start_time: 开始时间（可选）
+            **kwargs: 其他参数
+        """
+        # 只在有损失组件数据时添加自定义日志
+        if hasattr(self, '_current_lm_loss'):
+            logs.update({
+                "train_lm_loss": self._current_lm_loss,
+                "train_entropy_loss": self._current_entropy_loss,
+                "lm_loss_weight": self.lm_loss_weight,
+                "entropy_loss_weight": self.entropy_loss_weight
+            })
+        
+        # 调用父类的日志记录方法
+        super().log(logs, start_time, **kwargs)
