@@ -11,6 +11,8 @@ import sys
 import os
 import shutil
 from contextlib import contextmanager
+import logging
+from datetime import datetime
 
 # 导入Transformers库的核心组件
 from transformers import AutoTokenizer, AutoModelForCausalLM, TrainingArguments, AutoConfig
@@ -30,6 +32,60 @@ from utils.trainer_ploss import CustomTrainerWithEntropyLoss
 # 获取日志记录器实例
 log = utils.get_logger("clm")
 
+
+def setup_project_logging():
+    """
+    设置项目日志文件保存功能
+    在项目根目录下的log文件夹中创建日志文件
+    
+    Returns:
+        log_file_path: 日志文件路径
+    """
+    # 获取项目根目录
+    project_root = os.path.dirname(os.path.abspath(__file__))
+    log_dir = os.path.join(project_root, "log")
+    
+    # 创建log文件夹（如果不存在）
+    os.makedirs(log_dir, exist_ok=True)
+    
+    # 生成带时间戳的日志文件名
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_filename = f"train_qat_{timestamp}.log"
+    log_file_path = os.path.join(log_dir, log_filename)
+    
+    # 配置日志格式
+    formatter = logging.Formatter(
+        '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    
+    # 创建文件处理器
+    file_handler = logging.FileHandler(log_file_path, encoding='utf-8')
+    file_handler.setLevel(logging.INFO)
+    file_handler.setFormatter(formatter)
+    
+    # 设置根日志记录器级别和处理器
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+    root_logger.addHandler(file_handler)
+    
+    # 确保transformers相关的所有日志都被记录
+    transformers_logger = logging.getLogger("transformers")
+    transformers_logger.setLevel(logging.INFO)
+    transformers_logger.addHandler(file_handler)
+    
+    # 添加训练器日志记录器
+    trainer_logger = logging.getLogger("transformers.trainer")
+    trainer_logger.setLevel(logging.INFO)
+    trainer_logger.addHandler(file_handler)
+    
+    # 添加我们自定义的日志记录器
+    clm_logger = logging.getLogger("clm")
+    clm_logger.setLevel(logging.INFO)
+    clm_logger.addHandler(file_handler)
+    
+    print(f"Training logs will be saved to: {log_file_path}")
+    return log_file_path
 
 def setup_debug_args():
     """
@@ -72,7 +128,10 @@ def setup_debug_args():
     training_args.do_train = os.environ.get("MODEL_DO_TRAIN", "True") == "True"
     training_args.do_eval = os.environ.get("MODEL_DO_EVAL", "True") == "True"
     training_args.output_dir = os.environ.get("MODEL_OUTPUT_DIR", "/root/autodl-tmp/output")
-    training_args.logging_dir = os.environ.get("MODEL_LOGGING_DIR", "/root/autodl-tmp/logs")
+    # 设置日志目录到项目log文件夹
+    project_root = os.path.dirname(os.path.abspath(__file__))
+    default_logging_dir = os.path.join(project_root, "log", "tensorboard")
+    training_args.logging_dir = os.environ.get("MODEL_LOGGING_DIR", default_logging_dir)
     training_args.per_device_train_batch_size = int(os.environ.get("MODEL_PER_DEVICE_TRAIN_BATCH_SIZE", 1))
     training_args.per_device_eval_batch_size = int(os.environ.get("MODEL_PER_DEVICE_EVAL_BATCH_SIZE", 1))
     training_args.gradient_accumulation_steps = int(os.environ.get("MODEL_GRADIENT_ACCUMULATION_STEPS", 8))
@@ -132,12 +191,16 @@ def train():
     4. 训练器配置
     5. 模型训练和评估
     """
+    # 首先设置项目日志文件保存
+    log_file_path = setup_project_logging()
+    
     # 检查是否在调试模式下运行（没有命令行参数）
     is_debug_mode = len(sys.argv) == 1
     
     if is_debug_mode:
         # 调试模式：使用预设的默认参数
         print("Running in debug mode with default arguments...")
+        log.info("Running in debug mode with default arguments...")
         model_args, data_args, training_args = setup_debug_args()
         # 注意：调试模式下通常不初始化分布式训练
         # dist.init_process_group(backend="nccl")
@@ -147,6 +210,7 @@ def train():
         model_args, data_args, training_args = process_args()  # 处理命令行参数
 
     log.info("Start to load models...")
+    log.info(f"Log file saved to: {log_file_path}")
     
     # 根据训练参数确定模型数据类型
     dtype = torch.bfloat16 if training_args.bf16 else torch.float
@@ -221,6 +285,9 @@ def train():
     model.config.use_cache = False
     
     # 从自定义参数对象创建HuggingFace TrainingArguments对象
+    # 确保logging_dir目录存在
+    os.makedirs(training_args.logging_dir, exist_ok=True)
+    
     hf_training_args = TrainingArguments(
         bf16=training_args.bf16,
         do_train=training_args.do_train,
@@ -282,13 +349,18 @@ def train():
 
     # 执行训练（如果启用训练模式）
     if training_args.do_train:
+        log.info("Starting training...")
         train_result = trainer.train()  # 开始训练
+        log.info("Training completed")
         trainer.save_state()  # 保存训练状态（优化器、调度器等）
         # 安全保存模型
+        log.info(f"Saving model to: {model_args.output_model_local_path}")
         utils.safe_save_model_for_hf_trainer(trainer, model_args.output_model_local_path)
+        log.info("Model saved successfully")
 
     # 执行评估（如果启用评估模式）
     if training_args.do_eval:
+        log.info("Starting evaluation...")
         model.to("cuda")  # 确保模型在GPU上
         metrics = trainer.evaluate()  # 执行评估
         
@@ -305,13 +377,15 @@ def train():
         metrics["perplexity"] = perplexity
 
         # 记录和保存评估指标
+        log.info(f"Evaluation completed. Metrics: {metrics}")
         trainer.log_metrics("eval", metrics)
         trainer.save_metrics("eval", metrics)
 
     # 等待所有进程完成（仅在分布式训练模式下）
     if not is_debug_mode:
         torch.distributed.barrier()
-
+    
+    log.info("Training script completed successfully")
 
 @contextmanager
 def switch_modeling_file(model_path, use_origin_model=True):

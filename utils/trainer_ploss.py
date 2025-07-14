@@ -1,6 +1,8 @@
 from transformers import Trainer
 import torch
 import torch.nn.functional as F
+import logging
+
 class CustomTrainerWithEntropyLoss(Trainer):
     """
     自定义Trainer类，支持熵辅助损失
@@ -23,6 +25,10 @@ class CustomTrainerWithEntropyLoss(Trainer):
         self.entropy_loss_weight = entropy_loss_weight
         self.lm_loss_weight = lm_loss_weight
         self.last_logged_step = -1
+        
+        # 获取日志记录器
+        self.logger = logging.getLogger("transformers.trainer")
+        
         # 如果有原始模型，将其设置为评估模式并冻结参数
         if self.origin_model is not None:
             self.origin_model.eval()
@@ -43,7 +49,6 @@ class CustomTrainerWithEntropyLoss(Trainer):
         Returns:
             entropy_loss: 熵损失值
         """
-        # 计算概率分布
         # 计算概率分布
         qat_probs = F.softmax(qat_logits.float(), dim=-1)
         origin_probs = F.softmax(origin_logits.float(), dim=-1)
@@ -114,21 +119,40 @@ class CustomTrainerWithEntropyLoss(Trainer):
     
     def log(self, logs, start_time=None, **kwargs):
         """
-        重写日志记录方法，添加自定义损失组件
+        重写日志记录方法，添加自定义损失组件并确保写入文件
         
         Args:
             logs: 日志字典
             start_time: 开始时间（可选）
             **kwargs: 其他参数
         """
+        # 保留原始的loss值（这是Trainer默认记录的总损失）
+        original_logs = logs.copy()
+        
         # 只在有损失组件数据时添加自定义日志
         if hasattr(self, '_current_lm_loss'):
-            logs.update({
+            # 添加自定义损失组件，但保留原始loss
+            additional_logs = {
                 "train_lm_loss": self._current_lm_loss,
                 "train_entropy_loss": self._current_entropy_loss,
+                "train_total_loss": self._current_total_loss,
                 "lm_loss_weight": self.lm_loss_weight,
                 "entropy_loss_weight": self.entropy_loss_weight
-            })
+            }
+            # 合并日志，确保不覆盖原始的loss
+            logs.update(additional_logs)
+        
+        # 记录到文件日志
+        if self.state.is_world_process_zero:
+            log_str = f"Step {self.state.global_step}: "
+            log_items = []
+            for key, value in logs.items():
+                if isinstance(value, (int, float)):
+                    log_items.append(f"{key}={value:.6f}")
+                else:
+                    log_items.append(f"{key}={value}")
+            log_str += ", ".join(log_items)
+            self.logger.info(log_str)
         
         # 调用父类的日志记录方法
         super().log(logs, start_time, **kwargs)
