@@ -13,6 +13,13 @@ import shutil
 from contextlib import contextmanager
 import logging
 from datetime import datetime
+import os
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+os.environ["RANK"] = "0"
+os.environ["LOCAL_RANK"] = "0"
+os.environ["WORLD_SIZE"] = "1"
+os.environ["MASTER_ADDR"] = "localhost"
+os.environ["MASTER_PORT"] = "29500"
 
 # 导入Transformers库的核心组件
 from transformers import AutoTokenizer, AutoModelForCausalLM, TrainingArguments, AutoConfig
@@ -101,53 +108,53 @@ def setup_debug_args():
     class Args:
         pass
 
-    # 配置模型相关参数（支持环境变量覆盖）
+    # 配置模型相关参数
     model_args = Args()
-    model_args.input_model_filename = os.environ.get("MODEL_INPUT_MODEL_FILENAME", "D:\model_best\minicpm\pretrain_model\Qwen3-0___6B")
-    model_args.output_model_local_path = os.environ.get("MODEL_OUTPUT_MODEL_LOCAL_PATH", "D:\model_best\minicpm\pretrain_model\Qwen3-0___6B-GPTQ-Int8\model.safetensors")
-    model_args.w_bits = int(os.environ.get("MODEL_W_BITS", 8))
-    model_args.contain_weight_clip_val = os.environ.get("MODEL_CONTAIN_WEIGHT_CLIP_VAL", "False") == "True"
-    model_args.group_size = int(os.environ.get("MODEL_GROUP_SIZE", 128))
-    model_args.enable_groupwise = os.environ.get("MODEL_ENABLE_GROUPWISE", "True") == "True"
-    model_args.gptq_model_path = os.environ.get("MODEL_GPTQ_MODEL_PATH", "D:\model_best\minicpm\pretrain_model\Qwen3-0___6B-GPTQ-Int8\model.safetensors")
-    model_args.only_train_adapter = os.environ.get("MODEL_ONLY_TRAIN_ADAPTER", "True") == "True"
-    model_args.use_origin_model = os.environ.get("MODEL_USE_ORIGIN_MODEL", "True") == "True"
-    model_args.entropy_loss_weight = float(os.environ.get("MODEL_ENTROPY_LOSS_WEIGHT", 0.1))
-    model_args.lm_loss_weight = float(os.environ.get("MODEL_LM_LOSS_WEIGHT", 1.0))
-
+    model_args.input_model_filename = "/home/featurize/work/Qwen3-0.6B"
+    model_args.output_model_local_path = "/home/featurize/work/ParetoQ_for_MiniCPM4/output"
+    model_args.w_bits = 4
+    model_args.contain_weight_clip_val = False
+    model_args.group_size = 128
+    model_args.enable_groupwise = True
+    model_args.gptq_model_path = "/home/featurize/work/Qwen3-0.6B-GPTQ-Int4/model.safetensors"
+    model_args.only_train_adapter = True
+    model_args.use_origin_model = True
+    model_args.entropy_loss_weight = 0.1
+    model_args.lm_loss_weight = 1.0
+    model_args.symmetric = False  # 是否使用对称量化
     # 配置数据相关参数
     data_args = Args()
-    data_args.train_data_local_path = os.environ.get("MODEL_TRAIN_DATA_LOCAL_PATH", r"D:\model_best\minicpm\ParetoQ_for_MiniCPM4\data\train_text.jsonl")
-    data_args.eval_data_local_path = os.environ.get("MODEL_EVAL_DATA_LOCAL_PATH", r"D:\model_best\minicpm\ParetoQ_for_MiniCPM4\data\training_dataset_example.jsonl")
+    data_args.train_data_local_path = "/home/featurize/work/ParetoQ_for_MiniCPM4/data/train_text.jsonl"
+    data_args.eval_data_local_path = "/home/featurize/work/ParetoQ_for_MiniCPM4/data/training_dataset_example.jsonl"
 
     # 配置训练相关参数
     training_args = Args()
-    training_args.bf16 = os.environ.get("MODEL_BF16", "True") == "True"
-    training_args.cache_dir = os.environ.get("MODEL_CACHE_DIR", "/root/autodl-tmp/cache")
-    training_args.model_max_length = int(os.environ.get("MODEL_MAX_LENGTH", 256))
-    training_args.do_train = os.environ.get("MODEL_DO_TRAIN", "True") == "True"
-    training_args.do_eval = os.environ.get("MODEL_DO_EVAL", "True") == "True"
-    training_args.output_dir = os.environ.get("MODEL_OUTPUT_DIR", "/root/autodl-tmp/output")
+    training_args.bf16 = True
+    training_args.cache_dir = "/home/featurize/work/ParetoQ_for_MiniCPM4/cache"
+    training_args.model_max_length = 256
+    training_args.do_train = True
+    training_args.do_eval = True
+    training_args.output_dir = "/home/featurize/work/ParetoQ_for_MiniCPM4/output"
     # 设置日志目录到项目log文件夹
     project_root = os.path.dirname(os.path.abspath(__file__))
-    default_logging_dir = os.path.join(project_root, "log", "tensorboard")
-    training_args.logging_dir = os.environ.get("MODEL_LOGGING_DIR", default_logging_dir)
-    training_args.per_device_train_batch_size = int(os.environ.get("MODEL_PER_DEVICE_TRAIN_BATCH_SIZE", 1))
-    training_args.per_device_eval_batch_size = int(os.environ.get("MODEL_PER_DEVICE_EVAL_BATCH_SIZE", 1))
-    training_args.gradient_accumulation_steps = int(os.environ.get("MODEL_GRADIENT_ACCUMULATION_STEPS", 8))
-    training_args.num_train_epochs = int(os.environ.get("MODEL_NUM_TRAIN_EPOCHS", 3))
-    training_args.learning_rate = float(os.environ.get("MODEL_LEARNING_RATE", 5e-6))
-    training_args.warmup_steps = int(os.environ.get("MODEL_WARMUP_STEPS", 100))
-    training_args.logging_steps = int(os.environ.get("MODEL_LOGGING_STEPS", 1))
-    training_args.save_steps = int(os.environ.get("MODEL_SAVE_STEPS", 500))
-    training_args.eval_steps = int(os.environ.get("MODEL_EVAL_STEPS", 500))
-    training_args.evaluation_strategy = os.environ.get("MODEL_EVALUATION_STRATEGY", "steps")
-    training_args.save_strategy = os.environ.get("MODEL_SAVE_STRATEGY", "steps")
-    training_args.load_best_model_at_end = os.environ.get("MODEL_LOAD_BEST_MODEL_AT_END", "True") == "True"
-    training_args.metric_for_best_model = os.environ.get("MODEL_METRIC_FOR_BEST_MODEL", "eval_loss")
-    training_args.greater_is_better = os.environ.get("MODEL_GREATER_IS_BETTER", "False") == "True"
-    training_args.remove_unused_columns = os.environ.get("MODEL_REMOVE_UNUSED_COLUMNS", "False") == "True"
-    training_args.dataloader_pin_memory = os.environ.get("MODEL_DATALOADER_PIN_MEMORY", "False") == "True"
+    training_args.logging_dir = os.path.join(project_root, "log", "tensorboard")
+    training_args.per_device_train_batch_size = 1
+    training_args.per_device_eval_batch_size = 1
+    training_args.gradient_accumulation_steps = 8
+    training_args.num_train_epochs = 3
+    training_args.learning_rate = 5e-6
+    training_args.warmup_steps = 100
+    training_args.logging_steps = 1
+    training_args.save_steps = 500
+    training_args.eval_steps = 500
+    training_args.evaluation_strategy = "steps"
+    training_args.save_strategy = "steps"
+    training_args.load_best_model_at_end = True
+    training_args.metric_for_best_model = "eval_loss"
+    training_args.greater_is_better = False
+    training_args.remove_unused_columns = False
+    training_args.dataloader_pin_memory = False
+    training_args.deepspeed = "/home/featurize/work/ParetoQ_for_MiniCPM4/deepspeed_config.json"
 
     return model_args, data_args, training_args
 
@@ -222,7 +229,8 @@ def train():
     config.w_bits = model_args.w_bits  # 权重量化位数
     config.group_size = model_args.group_size  # 分组量化的组大小
     config.enable_groupwise = model_args.enable_groupwise  # 启用分组量化
-    
+    config.symmetric = model_args.symmetric  # 是否使用对称量化
+
     # 加载QAT（量化感知训练）模型
     log.info("Loading QAT model...")
     model = load_model_with_specific_modeling_file(
@@ -246,6 +254,9 @@ def train():
     # 如果只训练适配器，配置模型为适配器训练模式
     if model_args.only_train_adapter:
         model = only_train_adapter(model, verbose=True)
+    trainable_params = [p for p in model.parameters() if p.requires_grad]
+    if len(trainable_params) == 0:
+        raise ValueError("No trainable parameters found in the model. Please check only_train_adapter or parameter freezing logic.")
     
     # 将模型移动到GPU设备
     model.cuda()
@@ -288,6 +299,9 @@ def train():
     # 确保logging_dir目录存在
     os.makedirs(training_args.logging_dir, exist_ok=True)
     
+    # 添加DeepSpeed配置到HuggingFace TrainingArguments
+    deepspeed_config = getattr(training_args, 'deepspeed', None)
+    
     hf_training_args = TrainingArguments(
         bf16=training_args.bf16,
         do_train=training_args.do_train,
@@ -311,8 +325,10 @@ def train():
         greater_is_better=training_args.greater_is_better,
         remove_unused_columns=training_args.remove_unused_columns,
         dataloader_pin_memory=training_args.dataloader_pin_memory,
+        deepspeed=deepspeed_config,  # 添加DeepSpeed配置
         report_to=[],  # 禁用wandb/tensorboard等报告工具
     )
+
 # 根据配置决定是否加载原始模型
     if model_args.use_origin_model:
         log.info("Loading original model...")
@@ -426,7 +442,7 @@ def switch_modeling_file(model_path, use_origin_model=True):
             # 使用原始模型，用modeling_backup.py替换modeling_qwen3.py
             log.info("Loading original model using modeling_backup.py")
             shutil.copy2(backup_py_path, modeling_py_path)
-        
+            
         # 执行代码块
         yield
         

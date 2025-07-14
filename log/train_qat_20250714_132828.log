@@ -1,0 +1,115 @@
+2025-07-14 13:28:28 - clm - INFO - Running in debug mode with default arguments...
+2025-07-14 13:28:28 - clm - INFO - Running in debug mode with default arguments...
+2025-07-14 13:28:28 - clm - INFO - Start to load models...
+2025-07-14 13:28:28 - clm - INFO - Start to load models...
+2025-07-14 13:28:28 - clm - INFO - Log file saved to: /home/featurize/work/ParetoQ_for_MiniCPM4/log/train_qat_20250714_132828.log
+2025-07-14 13:28:28 - clm - INFO - Log file saved to: /home/featurize/work/ParetoQ_for_MiniCPM4/log/train_qat_20250714_132828.log
+2025-07-14 13:28:28 - transformers.configuration_utils - INFO - loading configuration file /home/featurize/work/Qwen3-0.6B/config.json
+2025-07-14 13:28:28 - transformers.configuration_utils - INFO - Model config Qwen3Config {
+  "architectures": [
+    "Qwen3ForCausalLM"
+  ],
+  "attention_bias": false,
+  "attention_dropout": 0.0,
+  "bos_token_id": 151643,
+  "eos_token_id": 151645,
+  "head_dim": 128,
+  "hidden_act": "silu",
+  "hidden_size": 1024,
+  "initializer_range": 0.02,
+  "intermediate_size": 3072,
+  "layer_types": [
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention"
+  ],
+  "max_position_embeddings": 40960,
+  "max_window_layers": 28,
+  "model_type": "qwen3",
+  "num_attention_heads": 16,
+  "num_hidden_layers": 28,
+  "num_key_value_heads": 8,
+  "rms_norm_eps": 1e-06,
+  "rope_scaling": null,
+  "rope_theta": 1000000,
+  "sliding_window": null,
+  "tie_word_embeddings": true,
+  "torch_dtype": "bfloat16",
+  "transformers_version": "4.53.2",
+  "use_cache": true,
+  "use_sliding_window": false,
+  "vocab_size": 151936
+}
+
+2025-07-14 13:28:28 - clm - INFO - Loading QAT model...
+2025-07-14 13:28:28 - clm - INFO - Loading QAT model...
+2025-07-14 13:28:28 - clm - INFO - Loading QAT model using modeling_qwen3.py
+2025-07-14 13:28:28 - clm - INFO - Loading QAT model using modeling_qwen3.py
+2025-07-14 13:28:28 - transformers.modeling_utils - INFO - loading weights file /home/featurize/work/Qwen3-0.6B/model.safetensors
+2025-07-14 13:28:28 - transformers.modeling_utils - INFO - Instantiating Qwen3ForCausalLM model under default dtype torch.bfloat16.
+2025-07-14 13:28:28 - transformers.generation.configuration_utils - INFO - Generate config GenerationConfig {
+  "bos_token_id": 151643,
+  "eos_token_id": 151645
+}
+
+2025-07-14 13:28:29 - transformers.modeling_utils - INFO - All model checkpoint weights were used when initializing Qwen3ForCausalLM.
+
+2025-07-14 13:28:29 - transformers.modeling_utils - INFO - All the weights of Qwen3ForCausalLM were initialized from the model checkpoint at /home/featurize/work/Qwen3-0.6B.
+If your task is similar to the task the model of the checkpoint was trained on, you can already use Qwen3ForCausalLM for predictions without further training.
+2025-07-14 13:28:29 - transformers.generation.configuration_utils - INFO - loading configuration file /home/featurize/work/Qwen3-0.6B/generation_config.json
+2025-07-14 13:28:29 - transformers.generation.configuration_utils - INFO - Generate config GenerationConfig {
+  "bos_token_id": 151643,
+  "do_sample": true,
+  "eos_token_id": [
+    151645,
+    151643
+  ],
+  "pad_token_id": 151643,
+  "temperature": 0.6,
+  "top_k": 20,
+  "top_p": 0.95
+}
+
+2025-07-14 13:28:29 - clm - INFO - Loading GPTQ weights from /home/featurize/work/Qwen3-0.6B-GPTQ-Int4/model.safetensors...
+2025-07-14 13:28:29 - clm - INFO - Loading GPTQ weights from /home/featurize/work/Qwen3-0.6B-GPTQ-Int4/model.safetensors...
+2025-07-14 13:28:35 - clm - INFO - Complete model loading...
+2025-07-14 13:28:35 - clm - INFO - Complete model loading...
+2025-07-14 13:28:35 - clm - INFO - Start to load tokenizer...
+2025-07-14 13:28:35 - clm - INFO - Start to load tokenizer...
+2025-07-14 13:28:35 - transformers.tokenization_utils_base - INFO - loading file vocab.json
+2025-07-14 13:28:35 - transformers.tokenization_utils_base - INFO - loading file merges.txt
+2025-07-14 13:28:35 - transformers.tokenization_utils_base - INFO - loading file tokenizer.json
+2025-07-14 13:28:35 - transformers.tokenization_utils_base - INFO - loading file added_tokens.json
+2025-07-14 13:28:35 - transformers.tokenization_utils_base - INFO - loading file special_tokens_map.json
+2025-07-14 13:28:35 - transformers.tokenization_utils_base - INFO - loading file tokenizer_config.json
+2025-07-14 13:28:35 - transformers.tokenization_utils_base - INFO - loading file chat_template.jinja
+2025-07-14 13:28:36 - transformers.tokenization_utils_base - INFO - Special tokens have been added in the vocabulary, make sure the associated word embeddings are fine-tuned or trained.
+2025-07-14 13:28:36 - clm - INFO - Complete tokenizer loading...
+2025-07-14 13:28:36 - clm - INFO - Complete tokenizer loading...
+2025-07-14 13:28:36 - transformers.tokenization_utils_base - WARNING - Token indices sequence length is longer than the specified maximum sequence length for this model (324 > 256). Running this sequence through the model will result in indexing errors
+2025-07-14 13:28:41 - transformers.training_args - INFO - PyTorch: setting up devices
