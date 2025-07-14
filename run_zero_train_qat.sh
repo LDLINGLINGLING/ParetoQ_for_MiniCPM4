@@ -1,5 +1,7 @@
 #!/bin/bash
 
+# 指定使用的GPU编号（如只用0,1,2,3号卡）
+export CUDA_VISIBLE_DEVICES=0,1,2,3
 # =========================
 # Zero 配置参数
 # =========================
@@ -38,4 +40,4 @@ export MODEL_EVAL_STEPS=500
 # =========================
 # 启动训练
 # =========================
-zero --num_gpus $NUM_GPUS --master_port $MASTER_PORT python train_qwen.py
+zero --num_gpus $NUM_GPUS --master_port $MASTER_PORT python train_qat.py
