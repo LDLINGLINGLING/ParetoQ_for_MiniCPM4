@@ -1,0 +1,158 @@
+2025-07-15 08:38:47 - clm - INFO - Running in debug mode with default arguments...
+2025-07-15 08:38:47 - clm - INFO - Running in debug mode with default arguments...
+2025-07-15 08:38:47 - clm - INFO - Start to load models...
+2025-07-15 08:38:47 - clm - INFO - Start to load models...
+2025-07-15 08:38:47 - clm - INFO - Log file saved to: /home/featurize/work/ParetoQ_for_MiniCPM4/utils/log/train_qat_20250715_083847.log
+2025-07-15 08:38:47 - clm - INFO - Log file saved to: /home/featurize/work/ParetoQ_for_MiniCPM4/utils/log/train_qat_20250715_083847.log
+2025-07-15 08:38:47 - transformers.configuration_utils - INFO - loading configuration file /home/featurize/work/Qwen3-0.6B/config.json
+2025-07-15 08:38:47 - transformers.configuration_utils - INFO - Model config Qwen3Config {
+  "architectures": [
+    "Qwen3ForCausalLM"
+  ],
+  "attention_bias": false,
+  "attention_dropout": 0.0,
+  "bos_token_id": 151643,
+  "eos_token_id": 151645,
+  "head_dim": 128,
+  "hidden_act": "silu",
+  "hidden_size": 1024,
+  "initializer_range": 0.02,
+  "intermediate_size": 3072,
+  "layer_types": [
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention"
+  ],
+  "max_position_embeddings": 40960,
+  "max_window_layers": 28,
+  "model_type": "qwen3",
+  "num_attention_heads": 16,
+  "num_hidden_layers": 28,
+  "num_key_value_heads": 8,
+  "rms_norm_eps": 1e-06,
+  "rope_scaling": null,
+  "rope_theta": 1000000,
+  "sliding_window": null,
+  "tie_word_embeddings": true,
+  "torch_dtype": "bfloat16",
+  "transformers_version": "4.53.0",
+  "use_cache": true,
+  "use_sliding_window": false,
+  "vocab_size": 151936
+}
+
+2025-07-15 08:38:47 - clm - INFO - Loading QAT model...
+2025-07-15 08:38:47 - clm - INFO - Loading QAT model...
+2025-07-15 08:38:47 - transformers.configuration_utils - INFO - loading configuration file /home/featurize/work/Qwen3-0.6B/config.json
+2025-07-15 08:38:47 - transformers.configuration_utils - INFO - Model config Qwen3Config {
+  "architectures": [
+    "Qwen3ForCausalLM"
+  ],
+  "attention_bias": false,
+  "attention_dropout": 0.0,
+  "bos_token_id": 151643,
+  "eos_token_id": 151645,
+  "head_dim": 128,
+  "hidden_act": "silu",
+  "hidden_size": 1024,
+  "initializer_range": 0.02,
+  "intermediate_size": 3072,
+  "layer_types": [
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention"
+  ],
+  "max_position_embeddings": 40960,
+  "max_window_layers": 28,
+  "model_type": "qwen3",
+  "num_attention_heads": 16,
+  "num_hidden_layers": 28,
+  "num_key_value_heads": 8,
+  "rms_norm_eps": 1e-06,
+  "rope_scaling": null,
+  "rope_theta": 1000000,
+  "sliding_window": null,
+  "tie_word_embeddings": true,
+  "torch_dtype": "bfloat16",
+  "transformers_version": "4.53.0",
+  "use_cache": true,
+  "use_sliding_window": false,
+  "vocab_size": 151936
+}
+
+2025-07-15 08:38:47 - transformers.modeling_utils - INFO - loading weights file /home/featurize/work/Qwen3-0.6B/model.safetensors
+2025-07-15 08:38:47 - transformers.generation.configuration_utils - INFO - Generate config GenerationConfig {
+  "bos_token_id": 151643,
+  "eos_token_id": 151645
+}
+
+2025-07-15 08:38:47 - transformers.modeling_utils - INFO - All model checkpoint weights were used when initializing Qwen3ForCausalLM.
+
+2025-07-15 08:38:47 - transformers.modeling_utils - WARNING - Some weights of Qwen3ForCausalLM were not initialized from the model checkpoint at /home/featurize/work/Qwen3-0.6B and are newly initialized: ['model.layers.0.mlp.down_proj.g_idx', 'model.layers.0.mlp.down_proj.weight_clip_val', 'model.layers.0.mlp.gate_proj.g_idx', 'model.layers.0.mlp.gate_proj.weight_clip_val', 'model.layers.0.mlp.up_proj.g_idx', 'model.layers.0.mlp.up_proj.weight_clip_val', 'model.layers.0.self_attn.k_proj.g_idx', 'model.layers.0.self_attn.k_proj.weight_clip_val', 'model.layers.0.self_attn.o_proj.g_idx', 'model.layers.0.self_attn.o_proj.weight_clip_val', 'model.layers.0.self_attn.q_proj.g_idx', 'model.layers.0.self_attn.q_proj.weight_clip_val', 'model.layers.0.self_attn.v_proj.g_idx', 'model.layers.0.self_attn.v_proj.weight_clip_val', 'model.layers.1.mlp.down_proj.g_idx', 'model.layers.1.mlp.down_proj.weight_clip_val', 'model.layers.1.mlp.gate_proj.g_idx', 'model.layers.1.mlp.gate_proj.weight_clip_val', 'model.layers.1.mlp.up_proj.g_idx', 'model.layers.1.mlp.up_proj.weight_clip_val', 'model.layers.1.self_attn.k_proj.g_idx', 'model.layers.1.self_attn.k_proj.weight_clip_val', 'model.layers.1.self_attn.o_proj.g_idx', 'model.layers.1.self_attn.o_proj.weight_clip_val', 'model.layers.1.self_attn.q_proj.g_idx', 'model.layers.1.self_attn.q_proj.weight_clip_val', 'model.layers.1.self_attn.v_proj.g_idx', 'model.layers.1.self_attn.v_proj.weight_clip_val', 'model.layers.10.mlp.down_proj.g_idx', 'model.layers.10.mlp.down_proj.weight_clip_val', 'model.layers.10.mlp.gate_proj.g_idx', 'model.layers.10.mlp.gate_proj.weight_clip_val', 'model.layers.10.mlp.up_proj.g_idx', 'model.layers.10.mlp.up_proj.weight_clip_val', 'model.layers.10.self_attn.k_proj.g_idx', 'model.layers.10.self_attn.k_proj.weight_clip_val', 'model.layers.10.self_attn.o_proj.g_idx', 'model.layers.10.self_attn.o_proj.weight_clip_val', 'model.layers.10.self_attn.q_proj.g_idx', 'model.layers.10.self_attn.q_proj.weight_clip_val', 'model.layers.10.self_attn.v_proj.g_idx', 'model.layers.10.self_attn.v_proj.weight_clip_val', 'model.layers.11.mlp.down_proj.g_idx', 'model.layers.11.mlp.down_proj.weight_clip_val', 'model.layers.11.mlp.gate_proj.g_idx', 'model.layers.11.mlp.gate_proj.weight_clip_val', 'model.layers.11.mlp.up_proj.g_idx', 'model.layers.11.mlp.up_proj.weight_clip_val', 'model.layers.11.self_attn.k_proj.g_idx', 'model.layers.11.self_attn.k_proj.weight_clip_val', 'model.layers.11.self_attn.o_proj.g_idx', 'model.layers.11.self_attn.o_proj.weight_clip_val', 'model.layers.11.self_attn.q_proj.g_idx', 'model.layers.11.self_attn.q_proj.weight_clip_val', 'model.layers.11.self_attn.v_proj.g_idx', 'model.layers.11.self_attn.v_proj.weight_clip_val', 'model.layers.12.mlp.down_proj.g_idx', 'model.layers.12.mlp.down_proj.weight_clip_val', 'model.layers.12.mlp.gate_proj.g_idx', 'model.layers.12.mlp.gate_proj.weight_clip_val', 'model.layers.12.mlp.up_proj.g_idx', 'model.layers.12.mlp.up_proj.weight_clip_val', 'model.layers.12.self_attn.k_proj.g_idx', 'model.layers.12.self_attn.k_proj.weight_clip_val', 'model.layers.12.self_attn.o_proj.g_idx', 'model.layers.12.self_attn.o_proj.weight_clip_val', 'model.layers.12.self_attn.q_proj.g_idx', 'model.layers.12.self_attn.q_proj.weight_clip_val', 'model.layers.12.self_attn.v_proj.g_idx', 'model.layers.12.self_attn.v_proj.weight_clip_val', 'model.layers.13.mlp.down_proj.g_idx', 'model.layers.13.mlp.down_proj.weight_clip_val', 'model.layers.13.mlp.gate_proj.g_idx', 'model.layers.13.mlp.gate_proj.weight_clip_val', 'model.layers.13.mlp.up_proj.g_idx', 'model.layers.13.mlp.up_proj.weight_clip_val', 'model.layers.13.self_attn.k_proj.g_idx', 'model.layers.13.self_attn.k_proj.weight_clip_val', 'model.layers.13.self_attn.o_proj.g_idx', 'model.layers.13.self_attn.o_proj.weight_clip_val', 'model.layers.13.self_attn.q_proj.g_idx', 'model.layers.13.self_attn.q_proj.weight_clip_val', 'model.layers.13.self_attn.v_proj.g_idx', 'model.layers.13.self_attn.v_proj.weight_clip_val', 'model.layers.14.mlp.down_proj.g_idx', 'model.layers.14.mlp.down_proj.weight_clip_val', 'model.layers.14.mlp.gate_proj.g_idx', 'model.layers.14.mlp.gate_proj.weight_clip_val', 'model.layers.14.mlp.up_proj.g_idx', 'model.layers.14.mlp.up_proj.weight_clip_val', 'model.layers.14.self_attn.k_proj.g_idx', 'model.layers.14.self_attn.k_proj.weight_clip_val', 'model.layers.14.self_attn.o_proj.g_idx', 'model.layers.14.self_attn.o_proj.weight_clip_val', 'model.layers.14.self_attn.q_proj.g_idx', 'model.layers.14.self_attn.q_proj.weight_clip_val', 'model.layers.14.self_attn.v_proj.g_idx', 'model.layers.14.self_attn.v_proj.weight_clip_val', 'model.layers.15.mlp.down_proj.g_idx', 'model.layers.15.mlp.down_proj.weight_clip_val', 'model.layers.15.mlp.gate_proj.g_idx', 'model.layers.15.mlp.gate_proj.weight_clip_val', 'model.layers.15.mlp.up_proj.g_idx', 'model.layers.15.mlp.up_proj.weight_clip_val', 'model.layers.15.self_attn.k_proj.g_idx', 'model.layers.15.self_attn.k_proj.weight_clip_val', 'model.layers.15.self_attn.o_proj.g_idx', 'model.layers.15.self_attn.o_proj.weight_clip_val', 'model.layers.15.self_attn.q_proj.g_idx', 'model.layers.15.self_attn.q_proj.weight_clip_val', 'model.layers.15.self_attn.v_proj.g_idx', 'model.layers.15.self_attn.v_proj.weight_clip_val', 'model.layers.16.mlp.down_proj.g_idx', 'model.layers.16.mlp.down_proj.weight_clip_val', 'model.layers.16.mlp.gate_proj.g_idx', 'model.layers.16.mlp.gate_proj.weight_clip_val', 'model.layers.16.mlp.up_proj.g_idx', 'model.layers.16.mlp.up_proj.weight_clip_val', 'model.layers.16.self_attn.k_proj.g_idx', 'model.layers.16.self_attn.k_proj.weight_clip_val', 'model.layers.16.self_attn.o_proj.g_idx', 'model.layers.16.self_attn.o_proj.weight_clip_val', 'model.layers.16.self_attn.q_proj.g_idx', 'model.layers.16.self_attn.q_proj.weight_clip_val', 'model.layers.16.self_attn.v_proj.g_idx', 'model.layers.16.self_attn.v_proj.weight_clip_val', 'model.layers.17.mlp.down_proj.g_idx', 'model.layers.17.mlp.down_proj.weight_clip_val', 'model.layers.17.mlp.gate_proj.g_idx', 'model.layers.17.mlp.gate_proj.weight_clip_val', 'model.layers.17.mlp.up_proj.g_idx', 'model.layers.17.mlp.up_proj.weight_clip_val', 'model.layers.17.self_attn.k_proj.g_idx', 'model.layers.17.self_attn.k_proj.weight_clip_val', 'model.layers.17.self_attn.o_proj.g_idx', 'model.layers.17.self_attn.o_proj.weight_clip_val', 'model.layers.17.self_attn.q_proj.g_idx', 'model.layers.17.self_attn.q_proj.weight_clip_val', 'model.layers.17.self_attn.v_proj.g_idx', 'model.layers.17.self_attn.v_proj.weight_clip_val', 'model.layers.18.mlp.down_proj.g_idx', 'model.layers.18.mlp.down_proj.weight_clip_val', 'model.layers.18.mlp.gate_proj.g_idx', 'model.layers.18.mlp.gate_proj.weight_clip_val', 'model.layers.18.mlp.up_proj.g_idx', 'model.layers.18.mlp.up_proj.weight_clip_val', 'model.layers.18.self_attn.k_proj.g_idx', 'model.layers.18.self_attn.k_proj.weight_clip_val', 'model.layers.18.self_attn.o_proj.g_idx', 'model.layers.18.self_attn.o_proj.weight_clip_val', 'model.layers.18.self_attn.q_proj.g_idx', 'model.layers.18.self_attn.q_proj.weight_clip_val', 'model.layers.18.self_attn.v_proj.g_idx', 'model.layers.18.self_attn.v_proj.weight_clip_val', 'model.layers.19.mlp.down_proj.g_idx', 'model.layers.19.mlp.down_proj.weight_clip_val', 'model.layers.19.mlp.gate_proj.g_idx', 'model.layers.19.mlp.gate_proj.weight_clip_val', 'model.layers.19.mlp.up_proj.g_idx', 'model.layers.19.mlp.up_proj.weight_clip_val', 'model.layers.19.self_attn.k_proj.g_idx', 'model.layers.19.self_attn.k_proj.weight_clip_val', 'model.layers.19.self_attn.o_proj.g_idx', 'model.layers.19.self_attn.o_proj.weight_clip_val', 'model.layers.19.self_attn.q_proj.g_idx', 'model.layers.19.self_attn.q_proj.weight_clip_val', 'model.layers.19.self_attn.v_proj.g_idx', 'model.layers.19.self_attn.v_proj.weight_clip_val', 'model.layers.2.mlp.down_proj.g_idx', 'model.layers.2.mlp.down_proj.weight_clip_val', 'model.layers.2.mlp.gate_proj.g_idx', 'model.layers.2.mlp.gate_proj.weight_clip_val', 'model.layers.2.mlp.up_proj.g_idx', 'model.layers.2.mlp.up_proj.weight_clip_val', 'model.layers.2.self_attn.k_proj.g_idx', 'model.layers.2.self_attn.k_proj.weight_clip_val', 'model.layers.2.self_attn.o_proj.g_idx', 'model.layers.2.self_attn.o_proj.weight_clip_val', 'model.layers.2.self_attn.q_proj.g_idx', 'model.layers.2.self_attn.q_proj.weight_clip_val', 'model.layers.2.self_attn.v_proj.g_idx', 'model.layers.2.self_attn.v_proj.weight_clip_val', 'model.layers.20.mlp.down_proj.g_idx', 'model.layers.20.mlp.down_proj.weight_clip_val', 'model.layers.20.mlp.gate_proj.g_idx', 'model.layers.20.mlp.gate_proj.weight_clip_val', 'model.layers.20.mlp.up_proj.g_idx', 'model.layers.20.mlp.up_proj.weight_clip_val', 'model.layers.20.self_attn.k_proj.g_idx', 'model.layers.20.self_attn.k_proj.weight_clip_val', 'model.layers.20.self_attn.o_proj.g_idx', 'model.layers.20.self_attn.o_proj.weight_clip_val', 'model.layers.20.self_attn.q_proj.g_idx', 'model.layers.20.self_attn.q_proj.weight_clip_val', 'model.layers.20.self_attn.v_proj.g_idx', 'model.layers.20.self_attn.v_proj.weight_clip_val', 'model.layers.21.mlp.down_proj.g_idx', 'model.layers.21.mlp.down_proj.weight_clip_val', 'model.layers.21.mlp.gate_proj.g_idx', 'model.layers.21.mlp.gate_proj.weight_clip_val', 'model.layers.21.mlp.up_proj.g_idx', 'model.layers.21.mlp.up_proj.weight_clip_val', 'model.layers.21.self_attn.k_proj.g_idx', 'model.layers.21.self_attn.k_proj.weight_clip_val', 'model.layers.21.self_attn.o_proj.g_idx', 'model.layers.21.self_attn.o_proj.weight_clip_val', 'model.layers.21.self_attn.q_proj.g_idx', 'model.layers.21.self_attn.q_proj.weight_clip_val', 'model.layers.21.self_attn.v_proj.g_idx', 'model.layers.21.self_attn.v_proj.weight_clip_val', 'model.layers.22.mlp.down_proj.g_idx', 'model.layers.22.mlp.down_proj.weight_clip_val', 'model.layers.22.mlp.gate_proj.g_idx', 'model.layers.22.mlp.gate_proj.weight_clip_val', 'model.layers.22.mlp.up_proj.g_idx', 'model.layers.22.mlp.up_proj.weight_clip_val', 'model.layers.22.self_attn.k_proj.g_idx', 'model.layers.22.self_attn.k_proj.weight_clip_val', 'model.layers.22.self_attn.o_proj.g_idx', 'model.layers.22.self_attn.o_proj.weight_clip_val', 'model.layers.22.self_attn.q_proj.g_idx', 'model.layers.22.self_attn.q_proj.weight_clip_val', 'model.layers.22.self_attn.v_proj.g_idx', 'model.layers.22.self_attn.v_proj.weight_clip_val', 'model.layers.23.mlp.down_proj.g_idx', 'model.layers.23.mlp.down_proj.weight_clip_val', 'model.layers.23.mlp.gate_proj.g_idx', 'model.layers.23.mlp.gate_proj.weight_clip_val', 'model.layers.23.mlp.up_proj.g_idx', 'model.layers.23.mlp.up_proj.weight_clip_val', 'model.layers.23.self_attn.k_proj.g_idx', 'model.layers.23.self_attn.k_proj.weight_clip_val', 'model.layers.23.self_attn.o_proj.g_idx', 'model.layers.23.self_attn.o_proj.weight_clip_val', 'model.layers.23.self_attn.q_proj.g_idx', 'model.layers.23.self_attn.q_proj.weight_clip_val', 'model.layers.23.self_attn.v_proj.g_idx', 'model.layers.23.self_attn.v_proj.weight_clip_val', 'model.layers.24.mlp.down_proj.g_idx', 'model.layers.24.mlp.down_proj.weight_clip_val', 'model.layers.24.mlp.gate_proj.g_idx', 'model.layers.24.mlp.gate_proj.weight_clip_val', 'model.layers.24.mlp.up_proj.g_idx', 'model.layers.24.mlp.up_proj.weight_clip_val', 'model.layers.24.self_attn.k_proj.g_idx', 'model.layers.24.self_attn.k_proj.weight_clip_val', 'model.layers.24.self_attn.o_proj.g_idx', 'model.layers.24.self_attn.o_proj.weight_clip_val', 'model.layers.24.self_attn.q_proj.g_idx', 'model.layers.24.self_attn.q_proj.weight_clip_val', 'model.layers.24.self_attn.v_proj.g_idx', 'model.layers.24.self_attn.v_proj.weight_clip_val', 'model.layers.25.mlp.down_proj.g_idx', 'model.layers.25.mlp.down_proj.weight_clip_val', 'model.layers.25.mlp.gate_proj.g_idx', 'model.layers.25.mlp.gate_proj.weight_clip_val', 'model.layers.25.mlp.up_proj.g_idx', 'model.layers.25.mlp.up_proj.weight_clip_val', 'model.layers.25.self_attn.k_proj.g_idx', 'model.layers.25.self_attn.k_proj.weight_clip_val', 'model.layers.25.self_attn.o_proj.g_idx', 'model.layers.25.self_attn.o_proj.weight_clip_val', 'model.layers.25.self_attn.q_proj.g_idx', 'model.layers.25.self_attn.q_proj.weight_clip_val', 'model.layers.25.self_attn.v_proj.g_idx', 'model.layers.25.self_attn.v_proj.weight_clip_val', 'model.layers.26.mlp.down_proj.g_idx', 'model.layers.26.mlp.down_proj.weight_clip_val', 'model.layers.26.mlp.gate_proj.g_idx', 'model.layers.26.mlp.gate_proj.weight_clip_val', 'model.layers.26.mlp.up_proj.g_idx', 'model.layers.26.mlp.up_proj.weight_clip_val', 'model.layers.26.self_attn.k_proj.g_idx', 'model.layers.26.self_attn.k_proj.weight_clip_val', 'model.layers.26.self_attn.o_proj.g_idx', 'model.layers.26.self_attn.o_proj.weight_clip_val', 'model.layers.26.self_attn.q_proj.g_idx', 'model.layers.26.self_attn.q_proj.weight_clip_val', 'model.layers.26.self_attn.v_proj.g_idx', 'model.layers.26.self_attn.v_proj.weight_clip_val', 'model.layers.27.mlp.down_proj.g_idx', 'model.layers.27.mlp.down_proj.weight_clip_val', 'model.layers.27.mlp.gate_proj.g_idx', 'model.layers.27.mlp.gate_proj.weight_clip_val', 'model.layers.27.mlp.up_proj.g_idx', 'model.layers.27.mlp.up_proj.weight_clip_val', 'model.layers.27.self_attn.k_proj.g_idx', 'model.layers.27.self_attn.k_proj.weight_clip_val', 'model.layers.27.self_attn.o_proj.g_idx', 'model.layers.27.self_attn.o_proj.weight_clip_val', 'model.layers.27.self_attn.q_proj.g_idx', 'model.layers.27.self_attn.q_proj.weight_clip_val', 'model.layers.27.self_attn.v_proj.g_idx', 'model.layers.27.self_attn.v_proj.weight_clip_val', 'model.layers.3.mlp.down_proj.g_idx', 'model.layers.3.mlp.down_proj.weight_clip_val', 'model.layers.3.mlp.gate_proj.g_idx', 'model.layers.3.mlp.gate_proj.weight_clip_val', 'model.layers.3.mlp.up_proj.g_idx', 'model.layers.3.mlp.up_proj.weight_clip_val', 'model.layers.3.self_attn.k_proj.g_idx', 'model.layers.3.self_attn.k_proj.weight_clip_val', 'model.layers.3.self_attn.o_proj.g_idx', 'model.layers.3.self_attn.o_proj.weight_clip_val', 'model.layers.3.self_attn.q_proj.g_idx', 'model.layers.3.self_attn.q_proj.weight_clip_val', 'model.layers.3.self_attn.v_proj.g_idx', 'model.layers.3.self_attn.v_proj.weight_clip_val', 'model.layers.4.mlp.down_proj.g_idx', 'model.layers.4.mlp.down_proj.weight_clip_val', 'model.layers.4.mlp.gate_proj.g_idx', 'model.layers.4.mlp.gate_proj.weight_clip_val', 'model.layers.4.mlp.up_proj.g_idx', 'model.layers.4.mlp.up_proj.weight_clip_val', 'model.layers.4.self_attn.k_proj.g_idx', 'model.layers.4.self_attn.k_proj.weight_clip_val', 'model.layers.4.self_attn.o_proj.g_idx', 'model.layers.4.self_attn.o_proj.weight_clip_val', 'model.layers.4.self_attn.q_proj.g_idx', 'model.layers.4.self_attn.q_proj.weight_clip_val', 'model.layers.4.self_attn.v_proj.g_idx', 'model.layers.4.self_attn.v_proj.weight_clip_val', 'model.layers.5.mlp.down_proj.g_idx', 'model.layers.5.mlp.down_proj.weight_clip_val', 'model.layers.5.mlp.gate_proj.g_idx', 'model.layers.5.mlp.gate_proj.weight_clip_val', 'model.layers.5.mlp.up_proj.g_idx', 'model.layers.5.mlp.up_proj.weight_clip_val', 'model.layers.5.self_attn.k_proj.g_idx', 'model.layers.5.self_attn.k_proj.weight_clip_val', 'model.layers.5.self_attn.o_proj.g_idx', 'model.layers.5.self_attn.o_proj.weight_clip_val', 'model.layers.5.self_attn.q_proj.g_idx', 'model.layers.5.self_attn.q_proj.weight_clip_val', 'model.layers.5.self_attn.v_proj.g_idx', 'model.layers.5.self_attn.v_proj.weight_clip_val', 'model.layers.6.mlp.down_proj.g_idx', 'model.layers.6.mlp.down_proj.weight_clip_val', 'model.layers.6.mlp.gate_proj.g_idx', 'model.layers.6.mlp.gate_proj.weight_clip_val', 'model.layers.6.mlp.up_proj.g_idx', 'model.layers.6.mlp.up_proj.weight_clip_val', 'model.layers.6.self_attn.k_proj.g_idx', 'model.layers.6.self_attn.k_proj.weight_clip_val', 'model.layers.6.self_attn.o_proj.g_idx', 'model.layers.6.self_attn.o_proj.weight_clip_val', 'model.layers.6.self_attn.q_proj.g_idx', 'model.layers.6.self_attn.q_proj.weight_clip_val', 'model.layers.6.self_attn.v_proj.g_idx', 'model.layers.6.self_attn.v_proj.weight_clip_val', 'model.layers.7.mlp.down_proj.g_idx', 'model.layers.7.mlp.down_proj.weight_clip_val', 'model.layers.7.mlp.gate_proj.g_idx', 'model.layers.7.mlp.gate_proj.weight_clip_val', 'model.layers.7.mlp.up_proj.g_idx', 'model.layers.7.mlp.up_proj.weight_clip_val', 'model.layers.7.self_attn.k_proj.g_idx', 'model.layers.7.self_attn.k_proj.weight_clip_val', 'model.layers.7.self_attn.o_proj.g_idx', 'model.layers.7.self_attn.o_proj.weight_clip_val', 'model.layers.7.self_attn.q_proj.g_idx', 'model.layers.7.self_attn.q_proj.weight_clip_val', 'model.layers.7.self_attn.v_proj.g_idx', 'model.layers.7.self_attn.v_proj.weight_clip_val', 'model.layers.8.mlp.down_proj.g_idx', 'model.layers.8.mlp.down_proj.weight_clip_val', 'model.layers.8.mlp.gate_proj.g_idx', 'model.layers.8.mlp.gate_proj.weight_clip_val', 'model.layers.8.mlp.up_proj.g_idx', 'model.layers.8.mlp.up_proj.weight_clip_val', 'model.layers.8.self_attn.k_proj.g_idx', 'model.layers.8.self_attn.k_proj.weight_clip_val', 'model.layers.8.self_attn.o_proj.g_idx', 'model.layers.8.self_attn.o_proj.weight_clip_val', 'model.layers.8.self_attn.q_proj.g_idx', 'model.layers.8.self_attn.q_proj.weight_clip_val', 'model.layers.8.self_attn.v_proj.g_idx', 'model.layers.8.self_attn.v_proj.weight_clip_val', 'model.layers.9.mlp.down_proj.g_idx', 'model.layers.9.mlp.down_proj.weight_clip_val', 'model.layers.9.mlp.gate_proj.g_idx', 'model.layers.9.mlp.gate_proj.weight_clip_val', 'model.layers.9.mlp.up_proj.g_idx', 'model.layers.9.mlp.up_proj.weight_clip_val', 'model.layers.9.self_attn.k_proj.g_idx', 'model.layers.9.self_attn.k_proj.weight_clip_val', 'model.layers.9.self_attn.o_proj.g_idx', 'model.layers.9.self_attn.o_proj.weight_clip_val', 'model.layers.9.self_attn.q_proj.g_idx', 'model.layers.9.self_attn.q_proj.weight_clip_val', 'model.layers.9.self_attn.v_proj.g_idx', 'model.layers.9.self_attn.v_proj.weight_clip_val']
+You should probably TRAIN this model on a down-stream task to be able to use it for predictions and inference.
+2025-07-15 08:38:47 - transformers.generation.configuration_utils - INFO - loading configuration file /home/featurize/work/Qwen3-0.6B/generation_config.json
+2025-07-15 08:38:47 - transformers.generation.configuration_utils - INFO - Generate config GenerationConfig {
+  "bos_token_id": 151643,
+  "do_sample": true,
+  "eos_token_id": [
+    151645,
+    151643
+  ],
+  "pad_token_id": 151643,
+  "temperature": 0.6,
+  "top_k": 20,
+  "top_p": 0.95
+}
+
+2025-07-15 08:38:47 - clm - INFO - Loading GPTQ weights from /home/featurize/work/Qwen3-0.6B-GPTQ-Int8...
+2025-07-15 08:38:47 - clm - INFO - Loading GPTQ weights from /home/featurize/work/Qwen3-0.6B-GPTQ-Int8...

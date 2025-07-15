@@ -586,7 +586,7 @@ class QuantizeLinear(nn.Linear):
                 
                 # 每个输出特征的每个分组都有独立的缩放因子
                 # 形状：[out_features, num_groups]
-                self.weight_clip_val = nn.Parameter(torch.Tensor(out_features, num_groups))
+                self.zero = nn.Parameter(torch.Tensor(out_features, num_groups))
                 
                 # 存储分组信息用于调试和兼容性
                 self.num_groups = num_groups
@@ -595,7 +595,7 @@ class QuantizeLinear(nn.Linear):
                 # === 原始的逐行量化 ===
                 # 每个输出特征一个缩放因子
                 # 形状：[out_features, 1]
-                self.weight_clip_val = nn.Parameter(torch.Tensor(self.weight.shape[0], 1))
+                self.zero = nn.Parameter(torch.Tensor(self.weight.shape[0], 1))
     
     def forward(self, input_):
         """
@@ -617,7 +617,7 @@ class QuantizeLinear(nn.Linear):
                 # 使用分组Stretched Elastic量化
                 weight = StretchedElasticGroupWiseQuant.apply(
                     real_weights,
-                    self.weight_clip_val,
+                    self.zero,
                     self.w_bits,
                     self.group_size,
                 ).to(input_.dtype)
@@ -625,7 +625,7 @@ class QuantizeLinear(nn.Linear):
                 # 使用分组LSQ量化
                 weight = LsqGroupWiseExtension.apply(
                     real_weights,
-                    self.weight_clip_val,
+                    self.zero,
                     self.w_bits,
                     self.group_size,
                 ).to(input_.dtype)
@@ -637,7 +637,7 @@ class QuantizeLinear(nn.Linear):
                 # 使用原始Stretched Elastic量化
                 weight = StretchedElasticQuant.apply(
                     real_weights,
-                    self.weight_clip_val,
+                    self.zero,
                     self.w_bits,
                     self.weight_layerwise,
                 ).to(input_.dtype)
@@ -645,7 +645,7 @@ class QuantizeLinear(nn.Linear):
                 # 使用原始LSQ量化
                 weight = LsqBinaryTernaryExtension.apply(
                     real_weights,
-                    self.weight_clip_val,
+                    self.zero,
                     self.w_bits,
                     self.weight_layerwise,
                 ).to(input_.dtype)

@@ -20,29 +20,31 @@
 # limitations under the License.
 
 from typing import Callable, Optional, Union
-
+print("""=== Using local modeling_qwen3.py file ===""")
 import torch
 from torch import nn
-
-from ...activations import ACT2FN
-from ...cache_utils import Cache, DynamicCache
-from ...generation import GenerationMixin
-from ...integrations import use_kernel_forward_from_hub
-from ...masking_utils import create_causal_mask, create_sliding_window_causal_mask
-from ...modeling_flash_attention_utils import FlashAttentionKwargs
-from ...modeling_layers import GradientCheckpointingLayer
-from ...modeling_outputs import (
+import sys, os
+sys.path.append(os.path.dirname(__file__))
+from ste_round import QuantizeLinear
+from transformers.activations import ACT2FN
+from transformers.cache_utils import Cache, DynamicCache
+from transformers.generation import GenerationMixin
+from transformers.integrations import use_kernel_forward_from_hub
+from transformers.masking_utils import create_causal_mask, create_sliding_window_causal_mask
+from transformers.modeling_flash_attention_utils import FlashAttentionKwargs
+from transformers.modeling_layers import GradientCheckpointingLayer
+from transformers.modeling_outputs import (
     BaseModelOutputWithPast,
     CausalLMOutputWithPast,
     QuestionAnsweringModelOutput,
     SequenceClassifierOutputWithPast,
     TokenClassifierOutput,
 )
-from ...modeling_rope_utils import ROPE_INIT_FUNCTIONS, dynamic_rope_update
-from ...modeling_utils import ALL_ATTENTION_FUNCTIONS, PreTrainedModel
-from ...processing_utils import Unpack
-from ...utils import LossKwargs, auto_docstring, can_return_tuple, logging
-from .configuration_qwen3 import Qwen3Config
+from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS, dynamic_rope_update
+from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS, PreTrainedModel
+from transformers.processing_utils import Unpack
+from transformers.utils import LossKwargs, auto_docstring, can_return_tuple, logging
+from configuration_qwen3 import Qwen3Config
 
 
 logger = logging.get_logger(__name__)
@@ -75,9 +77,9 @@ class Qwen3MLP(nn.Module):
         self.config = config
         self.hidden_size = config.hidden_size
         self.intermediate_size = config.intermediate_size
-        self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
-        self.up_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
-        self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
+        self.gate_proj = QuantizeLinear(self.hidden_size, self.intermediate_size, bias=False, w_bits=config.w_bits, group_size=config.group_size, enable_groupwise=config.enable_groupwise, symmetric=config.symmetric)
+        self.up_proj = QuantizeLinear(self.hidden_size, self.intermediate_size, bias=False, w_bits=config.w_bits, group_size=config.group_size, enable_groupwise=config.enable_groupwise, symmetric=config.symmetric)
+        self.down_proj = QuantizeLinear(self.intermediate_size, self.hidden_size, bias=False, w_bits=config.w_bits, group_size=config.group_size, enable_groupwise=config.enable_groupwise, symmetric=config.symmetric)
         self.act_fn = ACT2FN[config.hidden_act]
 
     def forward(self, x):
@@ -170,18 +172,18 @@ class Qwen3Attention(nn.Module):
         self.attention_dropout = config.attention_dropout
         self.is_causal = True
 
-        self.q_proj = nn.Linear(
-            config.hidden_size, config.num_attention_heads * self.head_dim, bias=config.attention_bias
-        )
-        self.k_proj = nn.Linear(
-            config.hidden_size, config.num_key_value_heads * self.head_dim, bias=config.attention_bias
-        )
-        self.v_proj = nn.Linear(
-            config.hidden_size, config.num_key_value_heads * self.head_dim, bias=config.attention_bias
-        )
-        self.o_proj = nn.Linear(
-            config.num_attention_heads * self.head_dim, config.hidden_size, bias=config.attention_bias
-        )
+        self.q_proj = QuantizeLinear(
+            config.hidden_size, config.num_attention_heads * self.head_dim, bias=config.attention_bias, w_bits=config.w_bits, group_size=config.group_size, enable_groupwise=config.enable_groupwise, symmetric=config.symmetric)
+        
+        self.k_proj = QuantizeLinear(
+            config.hidden_size, config.num_key_value_heads * self.head_dim, bias=config.attention_bias, w_bits=config.w_bits, group_size=config.group_size, enable_groupwise=config.enable_groupwise, symmetric=config.symmetric)
+        
+        self.v_proj = QuantizeLinear(
+            config.hidden_size, config.num_key_value_heads * self.head_dim, bias=config.attention_bias, w_bits=config.w_bits, group_size=config.group_size, enable_groupwise=config.enable_groupwise, symmetric=config.symmetric)
+        
+        self.o_proj = QuantizeLinear(
+            config.num_attention_heads * self.head_dim, config.hidden_size, bias=config.attention_bias, w_bits=config.w_bits, group_size=config.group_size, enable_groupwise=config.enable_groupwise, symmetric=config.symmetric)
+        
         self.q_norm = Qwen3RMSNorm(self.head_dim, eps=config.rms_norm_eps)  # unlike olmo, only on the head dim!
         self.k_norm = Qwen3RMSNorm(self.head_dim, eps=config.rms_norm_eps)  # thus post q_norm does not need reshape
         self.sliding_window = config.sliding_window if config.layer_types[layer_idx] == "sliding_attention" else None

@@ -3,12 +3,12 @@
 # =========================
 # DeepSpeed 配置参数
 # =========================
-NUM_GPUS=${NUM_GPUS:-4}
+NUM_GPUS=${NUM_GPUS:-1}
 MASTER_PORT=${MASTER_PORT:-29500}
 DEEPSPEED_CONFIG="/home/featurize/work/ParetoQ_for_MiniCPM4/deepspeed_config.json"
 
 # 指定使用的GPU编号
-export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3}
+export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
 
 # =========================
 # 模型训练参数配置（可通过命令行参数传递）
@@ -22,6 +22,8 @@ ONLY_TRAIN_ADAPTER=${5:-"True"}
 USE_ORIGIN_MODEL=${6:-"True"}
 ENTROPY_LOSS_WEIGHT=${7:-0.1}
 LM_LOSS_WEIGHT=${8:-1.0}
+MODEL_TYPE=${22:-"qwen3_qat"}
+MODELING_FILENAME=${23:-"modeling_qwen3_qat.py"}
 
 # 数据相关参数
 TRAIN_DATA_LOCAL_PATH=${9:-"/home/featurize/work/ParetoQ_for_MiniCPM4/data/train_text.jsonl"}
@@ -77,4 +79,6 @@ deepspeed --num_gpus $NUM_GPUS --master_port $MASTER_PORT train_qat.py \
     --save_steps $SAVE_STEPS \
     --eval_steps $EVAL_STEPS \
     --gptq_model_path "$GPTQ_MODEL_PATH" \
+    --model_type "$MODEL_TYPE" \
+    --modeling_filename "$MODELING_FILENAME" \
     --deepspeed "$DEEPSPEED_CONFIG"
